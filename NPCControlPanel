@@ -18,7 +18,6 @@ end
 
 local mouse = player:GetMouse()
 
--- Find the best parent for UI (tries exploit bypass first)
 local function getUIParent()
     if gethui then return gethui() end
     local ok, cg = pcall(function() return game:GetService("CoreGui") end)
@@ -27,14 +26,12 @@ local function getUIParent()
 end
 local uiParent = getUIParent()
 
--- Connection tracking for full cleanup
 local connections = {}
 local function track(conn)
     table.insert(connections, conn)
     return conn
 end
 
--- Shared state
 local states = {
     killNPCs  = false,
     pushNPCs  = false,
@@ -42,15 +39,14 @@ local states = {
     fling     = false,
     viewNPC   = false,
 }
-local anchorActive   = false
-local loopEpoch      = 0
-local pushStrength   = 150
-local pushRange      = 15
-local flingStrength  = 300
-local pushRangeVisual = nil
-local pushVisualConn  = nil
+local anchorActive    = false
+local loopEpoch       = 0
+local pushStrength    = 150
+local pushRange       = 15
+local flingStrength   = 300
+local viewingNPC      = false -- true when camera is locked to an NPC
+local viewedHumanoid  = nil   -- the humanoid we're currently viewing
 
--- Full cleanup function
 local function cleanup()
     loopEpoch = loopEpoch + 1
     for k in pairs(states) do states[k] = false end
@@ -60,14 +56,9 @@ local function cleanup()
         end
     end
     connections = {}
-    if pushRangeVisual then
-        pushRangeVisual:Destroy()
-        pushRangeVisual = nil
-    end
-    -- Remove existing GUI
     local function removeFrom(p)
         if p then
-            local old = p:FindFirstChild("NPCControlGUI_v4")
+            local old = p:FindFirstChild("NPCControlGUI_v5")
             if old then old:Destroy() end
         end
     end
@@ -77,9 +68,9 @@ local function cleanup()
 end
 _G[CONTROL_KEY] = cleanup
 
-local function resetStates()
-    loopEpoch = loopEpoch + 1
-    for k in pairs(states) do states[k] = false end
+local function resetCamera()
+    viewingNPC = false
+    viewedHumanoid = nil
     local char = player.Character
     if char then
         local hum = char:FindFirstChildOfClass("Humanoid")
@@ -89,42 +80,45 @@ local function resetStates()
     end
 end
 
+local function resetStates()
+    loopEpoch = loopEpoch + 1
+    for k in pairs(states) do states[k] = false end
+    resetCamera()
+end
+
 -- ============================================================
---  GUI CONSTRUCTION
+--  GUI
 -- ============================================================
 local gui = Instance.new("ScreenGui")
-gui.Name            = "NPCControlGUI_v4"
+gui.Name            = "NPCControlGUI_v5"
 gui.ResetOnSpawn    = false
 gui.IgnoreGuiInset  = true
 gui.DisplayOrder    = 2147483647
 gui.ZIndexBehavior  = Enum.ZIndexBehavior.Global
 gui.Parent          = uiParent
 
--- ── MAIN FRAME ──────────────────────────────────────────────
+-- MAIN FRAME
 local mainFrame = Instance.new("Frame")
 mainFrame.Name              = "MainFrame"
 mainFrame.Size              = UDim2.new(0, 430, 0, 420)
 mainFrame.Position          = UDim2.new(0.5, -215, 0.25, 0)
 mainFrame.BackgroundColor3  = Color3.fromRGB(22, 22, 30)
 mainFrame.BorderSizePixel   = 0
-mainFrame.ClipsDescendants  = false
 mainFrame.ZIndex            = 2
 mainFrame.Parent            = gui
 Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
 
--- Drop shadow (cosmetic frame behind main)
 local shadow = Instance.new("Frame")
-shadow.Size             = UDim2.new(1, 12, 1, 12)
-shadow.Position         = UDim2.new(0, -6, 0, -6)
-shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-shadow.Transparency     = 0 -- will be set below
-shadow.BorderSizePixel  = 0
-shadow.ZIndex           = 1
-shadow.Parent           = mainFrame
-Instance.new("UICorner", shadow).CornerRadius = UDim.new(0, 14)
+shadow.Size              = UDim2.new(1, 12, 1, 12)
+shadow.Position          = UDim2.new(0, -6, 0, -6)
+shadow.BackgroundColor3  = Color3.fromRGB(0, 0, 0)
 shadow.BackgroundTransparency = 0.6
+shadow.BorderSizePixel   = 0
+shadow.ZIndex            = 1
+shadow.Parent            = mainFrame
+Instance.new("UICorner", shadow).CornerRadius = UDim.new(0, 14)
 
--- ── TOP BAR ─────────────────────────────────────────────────
+-- TOP BAR
 local topBar = Instance.new("Frame")
 topBar.Name             = "TopBar"
 topBar.Size             = UDim2.new(1, 0, 0, 38)
@@ -134,41 +128,38 @@ topBar.ZIndex           = 3
 topBar.Parent           = mainFrame
 Instance.new("UICorner", topBar).CornerRadius = UDim.new(0, 10)
 
--- Patch bottom corners of topbar (UICorner rounds all corners)
 local topBarPatch = Instance.new("Frame")
-topBarPatch.Size            = UDim2.new(1, 0, 0, 10)
-topBarPatch.Position        = UDim2.new(0, 0, 1, -10)
+topBarPatch.Size             = UDim2.new(1, 0, 0, 10)
+topBarPatch.Position         = UDim2.new(0, 0, 1, -10)
 topBarPatch.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
 topBarPatch.BorderSizePixel  = 0
 topBarPatch.ZIndex           = 3
 topBarPatch.Parent           = topBar
 
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Size             = UDim2.new(1, -120, 1, 0)
-titleLabel.Position         = UDim2.new(0, 12, 0, 0)
+titleLabel.Size              = UDim2.new(1, -120, 1, 0)
+titleLabel.Position          = UDim2.new(0, 12, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text             = "⚙  NPC Control Panel"
-titleLabel.Font             = Enum.Font.GothamBold
-titleLabel.TextColor3       = Color3.fromRGB(210, 210, 255)
-titleLabel.TextSize         = 14
-titleLabel.TextXAlignment   = Enum.TextXAlignment.Left
-titleLabel.ZIndex           = 4
-titleLabel.Parent           = topBar
+titleLabel.Text              = "⚙  NPC Control Panel"
+titleLabel.Font              = Enum.Font.GothamBold
+titleLabel.TextColor3        = Color3.fromRGB(210, 210, 255)
+titleLabel.TextSize          = 14
+titleLabel.TextXAlignment    = Enum.TextXAlignment.Left
+titleLabel.ZIndex            = 4
+titleLabel.Parent            = topBar
 
--- Settings button (gear)
 local settingsBtn = Instance.new("TextButton")
-settingsBtn.Size            = UDim2.new(0, 50, 0, 26)
-settingsBtn.Position        = UDim2.new(1, -116, 0.5, -13)
+settingsBtn.Size             = UDim2.new(0, 50, 0, 26)
+settingsBtn.Position         = UDim2.new(1, -116, 0.5, -13)
 settingsBtn.BackgroundColor3 = Color3.fromRGB(55, 55, 75)
-settingsBtn.Text            = "SET"
-settingsBtn.Font            = Enum.Font.GothamBold
-settingsBtn.TextColor3      = Color3.new(1, 1, 1)
-settingsBtn.TextSize        = 11
-settingsBtn.ZIndex          = 10
-settingsBtn.Parent          = topBar
+settingsBtn.Text             = "SET"
+settingsBtn.Font             = Enum.Font.GothamBold
+settingsBtn.TextColor3       = Color3.new(1, 1, 1)
+settingsBtn.TextSize         = 11
+settingsBtn.ZIndex           = 10
+settingsBtn.Parent           = topBar
 Instance.new("UICorner", settingsBtn).CornerRadius = UDim.new(0, 5)
 
--- Hide/Show toggle button
 local toggleBtn = Instance.new("TextButton")
 toggleBtn.Size             = UDim2.new(0, 50, 0, 26)
 toggleBtn.Position         = UDim2.new(1, -62, 0.5, -13)
@@ -181,31 +172,29 @@ toggleBtn.ZIndex           = 10
 toggleBtn.Parent           = topBar
 Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 5)
 
--- ── CONTENT AREA (below topbar) ─────────────────────────────
--- We use a plain Frame for the button grid so we control canvas manually
+-- CONTENT / SCROLL
 local contentFrame = Instance.new("Frame")
-contentFrame.Name               = "Content"
-contentFrame.Size               = UDim2.new(1, -16, 1, -120)
-contentFrame.Position           = UDim2.new(0, 8, 0, 44)
+contentFrame.Name                = "Content"
+contentFrame.Size                = UDim2.new(1, -16, 1, -120)
+contentFrame.Position            = UDim2.new(0, 8, 0, 44)
 contentFrame.BackgroundTransparency = 1
-contentFrame.ZIndex             = 3
-contentFrame.Parent             = mainFrame
+contentFrame.ZIndex              = 3
+contentFrame.Parent              = mainFrame
 
--- ScrollingFrame – no AutomaticCanvasSize, we set canvas manually
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Name                = "Scroll"
-scrollFrame.Size                = UDim2.new(1, 0, 1, 0)
-scrollFrame.Position            = UDim2.new(0, 0, 0, 0)
+scrollFrame.Name                 = "Scroll"
+scrollFrame.Size                 = UDim2.new(1, 0, 1, 0)
+scrollFrame.Position             = UDim2.new(0, 0, 0, 0)
 scrollFrame.BackgroundTransparency = 1
-scrollFrame.BorderSizePixel     = 0
-scrollFrame.ScrollBarThickness  = 5
+scrollFrame.BorderSizePixel      = 0
+scrollFrame.ScrollBarThickness   = 5
 scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 160)
-scrollFrame.CanvasSize          = UDim2.new(0, 0, 0, 0) -- set after adding buttons
-scrollFrame.ElasticBehavior     = Enum.ElasticBehavior.Never
-scrollFrame.ZIndex              = 3
-scrollFrame.Parent              = contentFrame
+scrollFrame.CanvasSize           = UDim2.new(0, 0, 0, 0)
+scrollFrame.ElasticBehavior      = Enum.ElasticBehavior.Never
+scrollFrame.ZIndex               = 3
+scrollFrame.Parent               = contentFrame
 
--- ── BUTTON DEFINITIONS ──────────────────────────────────────
+-- BUTTON DEFINITIONS
 local buttonDefs = {
     { label = "Kill NPCs (Loop)",  color = Color3.fromRGB(46, 139, 87)   },
     { label = "Push NPCs (Loop)",  color = Color3.fromRGB(70, 130, 180)  },
@@ -217,90 +206,131 @@ local buttonDefs = {
     { label = "Fling NPC (Click)", color = Color3.fromRGB(90, 60, 130)   },
 }
 
--- Grid constants
-local COLS        = 2
-local BTN_W       = 195
-local BTN_H       = 38
-local PAD_X       = 10
-local PAD_Y       = 10
-local GRID_OFFSET_X = 5
-local GRID_OFFSET_Y = 5
+local COLS     = 2
+local BTN_W    = 195
+local BTN_H    = 38
+local PAD_X    = 10
+local PAD_Y    = 10
+local OFFSET_X = 5
+local OFFSET_Y = 5
 
 local buttons = {}
 
 for i, def in ipairs(buttonDefs) do
-    local col = (i - 1) % COLS          -- 0 or 1
+    local col = (i - 1) % COLS
     local row = math.floor((i - 1) / COLS)
 
     local btn = Instance.new("TextButton")
-    btn.Size            = UDim2.new(0, BTN_W, 0, BTN_H)
-    btn.Position        = UDim2.new(
-        0, GRID_OFFSET_X + col * (BTN_W + PAD_X),
-        0, GRID_OFFSET_Y + row * (BTN_H + PAD_Y)
-    )
+    btn.Size             = UDim2.new(0, BTN_W, 0, BTN_H)
+    btn.Position         = UDim2.new(0, OFFSET_X + col * (BTN_W + PAD_X), 0, OFFSET_Y + row * (BTN_H + PAD_Y))
     btn.BackgroundColor3 = def.color
-    btn.Text            = def.label
-    btn.Font            = Enum.Font.GothamBold
-    btn.TextColor3      = Color3.new(1, 1, 1)
-    btn.TextSize        = 12
-    btn.ZIndex          = 4
-    btn.Parent          = scrollFrame
+    btn.Text             = def.label
+    btn.Font             = Enum.Font.GothamBold
+    btn.TextColor3       = Color3.new(1, 1, 1)
+    btn.TextSize         = 12
+    btn.ZIndex           = 4
+    btn.Parent           = scrollFrame
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
 
-    -- Hover effect
     btn.MouseEnter:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), {
-            BackgroundColor3 = def.color:Lerp(Color3.new(1,1,1), 0.15)
-        }):Play()
+        TweenService:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = def.color:Lerp(Color3.new(1,1,1), 0.15)}):Play()
     end)
     btn.MouseLeave:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), {
-            BackgroundColor3 = def.color
-        }):Play()
+        TweenService:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = def.color}):Play()
     end)
 
     buttons[def.label] = btn
 end
 
--- Set canvas height based on row count
-local numRows    = math.ceil(#buttonDefs / COLS)
-local canvasH    = GRID_OFFSET_Y + numRows * (BTN_H + PAD_Y)
-scrollFrame.CanvasSize = UDim2.new(0, 0, 0, canvasH)
+local numRows = math.ceil(#buttonDefs / COLS)
+scrollFrame.CanvasSize = UDim2.new(0, 0, 0, OFFSET_Y + numRows * (BTN_H + PAD_Y))
 
--- ── BOTTOM BUTTONS ───────────────────────────────────────────
+-- ── UNVIEW BUTTON (hidden by default, appears when viewing NPC) ──
+local unviewBtn = Instance.new("TextButton")
+unviewBtn.Size             = UDim2.new(0, 160, 0, 36)
+unviewBtn.Position         = UDim2.new(0.5, -80, 0, 8)
+unviewBtn.AnchorPoint      = Vector2.new(0, 0)
+unviewBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+unviewBtn.Text             = "👁 Unview NPC"
+unviewBtn.Font             = Enum.Font.GothamBold
+unviewBtn.TextColor3       = Color3.new(1, 1, 1)
+unviewBtn.TextSize         = 14
+unviewBtn.ZIndex           = 200
+unviewBtn.Visible          = false
+unviewBtn.Parent           = gui
+Instance.new("UICorner", unviewBtn).CornerRadius = UDim.new(0, 8)
+
+-- Pulse animation on unview button so it's noticeable
+task.spawn(function()
+    while gui.Parent do
+        if unviewBtn.Visible then
+            TweenService:Create(unviewBtn, TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+                BackgroundColor3 = Color3.fromRGB(255, 70, 70)
+            }):Play()
+            task.wait(0.6)
+            if unviewBtn.Visible then
+                TweenService:Create(unviewBtn, TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+                    BackgroundColor3 = Color3.fromRGB(180, 30, 30)
+                }):Play()
+                task.wait(0.6)
+            end
+        else
+            task.wait(0.3)
+        end
+    end
+end)
+
+local function showUnviewButton()
+    unviewBtn.Visible = true
+end
+
+local function hideUnviewButton()
+    unviewBtn.Visible = false
+end
+
+local function unviewNPC()
+    resetCamera()
+    hideUnviewButton()
+    -- Also turn off viewNPC mode
+    states.viewNPC = false
+    buttons["View NPC (Click)"].Text = "View NPC (Click)"
+end
+
+track(unviewBtn.MouseButton1Click:Connect(unviewNPC))
+
+-- BOTTOM BUTTONS
 local stopBtn = Instance.new("TextButton")
-stopBtn.Size            = UDim2.new(1, -16, 0, 32)
-stopBtn.Position        = UDim2.new(0, 8, 1, -72)
+stopBtn.Size             = UDim2.new(1, -16, 0, 32)
+stopBtn.Position         = UDim2.new(0, 8, 1, -72)
 stopBtn.BackgroundColor3 = Color3.fromRGB(160, 30, 30)
-stopBtn.Text            = "🛑  Stop All  [X]"
-stopBtn.Font            = Enum.Font.GothamBold
-stopBtn.TextColor3      = Color3.new(1, 1, 1)
-stopBtn.TextSize        = 13
-stopBtn.ZIndex          = 5
-stopBtn.Parent          = mainFrame
+stopBtn.Text             = "🛑  Stop All  [X]"
+stopBtn.Font             = Enum.Font.GothamBold
+stopBtn.TextColor3       = Color3.new(1, 1, 1)
+stopBtn.TextSize         = 13
+stopBtn.ZIndex           = 5
+stopBtn.Parent           = mainFrame
 Instance.new("UICorner", stopBtn).CornerRadius = UDim.new(0, 7)
 
 local anchorBtn = Instance.new("TextButton")
-anchorBtn.Size            = UDim2.new(1, -16, 0, 28)
-anchorBtn.Position        = UDim2.new(0, 8, 1, -36)
+anchorBtn.Size             = UDim2.new(1, -16, 0, 28)
+anchorBtn.Position         = UDim2.new(0, 8, 1, -36)
 anchorBtn.BackgroundColor3 = Color3.fromRGB(80, 40, 40)
-anchorBtn.Text            = "Anchor Toggle: OFF"
-anchorBtn.Font            = Enum.Font.GothamBold
-anchorBtn.TextColor3      = Color3.new(1, 1, 1)
-anchorBtn.TextSize        = 12
-anchorBtn.ZIndex          = 5
-anchorBtn.Parent          = mainFrame
+anchorBtn.Text             = "Anchor Toggle: OFF"
+anchorBtn.Font             = Enum.Font.GothamBold
+anchorBtn.TextColor3       = Color3.new(1, 1, 1)
+anchorBtn.TextSize         = 12
+anchorBtn.ZIndex           = 5
+anchorBtn.Parent           = mainFrame
 Instance.new("UICorner", anchorBtn).CornerRadius = UDim.new(0, 7)
 
 -- ============================================================
---  DRAGGING  (robust version – fully UIS based)
+--  DRAGGING
 -- ============================================================
 local function makeDraggable(frameToMove, handle)
     local dragging  = false
-    local dragDelta = Vector2.new(0, 0)  -- cursor offset inside frame
+    local dragDelta = Vector2.new(0, 0)
 
     track(handle.InputBegan:Connect(function(inp)
-        -- Only respond to left mouse button, and only if not on a child button
         if inp.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
         dragging  = true
         local mp  = UserInputService:GetMouseLocation()
@@ -308,15 +338,11 @@ local function makeDraggable(frameToMove, handle)
         dragDelta = Vector2.new(mp.X - fp.X, mp.Y - fp.Y)
     end))
 
-    -- UIS global catches movement even if cursor leaves the handle
     track(UserInputService.InputChanged:Connect(function(inp)
         if not dragging then return end
         if inp.UserInputType ~= Enum.UserInputType.MouseMovement then return end
         local mp = UserInputService:GetMouseLocation()
-        frameToMove.Position = UDim2.new(
-            0, mp.X - dragDelta.X,
-            0, mp.Y - dragDelta.Y
-        )
+        frameToMove.Position = UDim2.new(0, mp.X - dragDelta.X, 0, mp.Y - dragDelta.Y)
     end))
 
     track(UserInputService.InputEnded:Connect(function(inp)
@@ -358,89 +384,77 @@ setTopPatch.ZIndex           = 51
 setTopPatch.Parent           = setTopBar
 
 local setTitle = Instance.new("TextLabel")
-setTitle.Size               = UDim2.new(1, -40, 1, 0)
-setTitle.Position           = UDim2.new(0, 10, 0, 0)
+setTitle.Size                = UDim2.new(1, -40, 1, 0)
+setTitle.Position            = UDim2.new(0, 10, 0, 0)
 setTitle.BackgroundTransparency = 1
-setTitle.Text               = "⚙  Settings"
-setTitle.Font               = Enum.Font.GothamBold
-setTitle.TextColor3         = Color3.fromRGB(210, 210, 255)
-setTitle.TextSize           = 13
-setTitle.TextXAlignment     = Enum.TextXAlignment.Left
-setTitle.ZIndex             = 52
-setTitle.Parent             = setTopBar
+setTitle.Text                = "⚙  Settings"
+setTitle.Font                = Enum.Font.GothamBold
+setTitle.TextColor3          = Color3.fromRGB(210, 210, 255)
+setTitle.TextSize            = 13
+setTitle.TextXAlignment      = Enum.TextXAlignment.Left
+setTitle.ZIndex              = 52
+setTitle.Parent              = setTopBar
 
 local setCloseBtn = Instance.new("TextButton")
-setCloseBtn.Size            = UDim2.new(0, 26, 0, 26)
-setCloseBtn.Position        = UDim2.new(1, -30, 0.5, -13)
+setCloseBtn.Size             = UDim2.new(0, 26, 0, 26)
+setCloseBtn.Position         = UDim2.new(1, -30, 0.5, -13)
 setCloseBtn.BackgroundColor3 = Color3.fromRGB(160, 30, 30)
-setCloseBtn.Text            = "✕"
-setCloseBtn.Font            = Enum.Font.GothamBold
-setCloseBtn.TextColor3      = Color3.new(1, 1, 1)
-setCloseBtn.TextSize        = 13
-setCloseBtn.ZIndex          = 52
-setCloseBtn.Parent          = setTopBar
+setCloseBtn.Text             = "✕"
+setCloseBtn.Font             = Enum.Font.GothamBold
+setCloseBtn.TextColor3       = Color3.new(1, 1, 1)
+setCloseBtn.TextSize         = 13
+setCloseBtn.ZIndex           = 52
+setCloseBtn.Parent           = setTopBar
 Instance.new("UICorner", setCloseBtn).CornerRadius = UDim.new(0, 5)
 
 makeDraggable(settingsPanel, setTopBar)
 
--- ── SLIDER FACTORY ───────────────────────────────────────────
+-- SLIDER FACTORY
 local function makeSlider(cfg)
-    --[[
-        cfg = {
-            parent   = Frame,
-            yOffset  = number,
-            label    = string,
-            min      = number,
-            max      = number,
-            default  = number,
-            onChange = function(value) end,
-        }
-    ]]
     local container = Instance.new("Frame")
-    container.Size              = UDim2.new(1, -20, 0, 58)
-    container.Position          = UDim2.new(0, 10, 0, cfg.yOffset)
+    container.Size               = UDim2.new(1, -20, 0, 58)
+    container.Position           = UDim2.new(0, 10, 0, cfg.yOffset)
     container.BackgroundTransparency = 1
-    container.ZIndex            = 60
-    container.Parent            = cfg.parent
+    container.ZIndex             = 60
+    container.Parent             = cfg.parent
 
     local lbl = Instance.new("TextLabel")
-    lbl.Size                = UDim2.new(1, 0, 0, 22)
-    lbl.Position            = UDim2.new(0, 0, 0, 0)
+    lbl.Size                 = UDim2.new(1, 0, 0, 22)
+    lbl.Position             = UDim2.new(0, 0, 0, 0)
     lbl.BackgroundTransparency = 1
-    lbl.Font                = Enum.Font.Gotham
-    lbl.TextColor3          = Color3.fromRGB(200, 200, 230)
-    lbl.TextSize            = 12
-    lbl.TextXAlignment      = Enum.TextXAlignment.Left
-    lbl.ZIndex              = 61
-    lbl.Parent              = container
+    lbl.Font                 = Enum.Font.Gotham
+    lbl.TextColor3           = Color3.fromRGB(200, 200, 230)
+    lbl.TextSize             = 12
+    lbl.TextXAlignment       = Enum.TextXAlignment.Left
+    lbl.ZIndex               = 61
+    lbl.Parent               = container
 
     local track_bg = Instance.new("Frame")
-    track_bg.Size           = UDim2.new(1, -20, 0, 8)
-    track_bg.Position       = UDim2.new(0, 10, 0, 32)
+    track_bg.Size            = UDim2.new(1, -20, 0, 8)
+    track_bg.Position        = UDim2.new(0, 10, 0, 32)
     track_bg.BackgroundColor3 = Color3.fromRGB(55, 55, 75)
     track_bg.BorderSizePixel = 0
-    track_bg.ZIndex         = 61
-    track_bg.Parent         = container
+    track_bg.ZIndex          = 61
+    track_bg.Parent          = container
     Instance.new("UICorner", track_bg).CornerRadius = UDim.new(1, 0)
 
     local fill = Instance.new("Frame")
-    fill.Size               = UDim2.new(0, 0, 1, 0)
-    fill.BackgroundColor3   = Color3.fromRGB(0, 160, 255)
-    fill.BorderSizePixel    = 0
-    fill.ZIndex             = 62
-    fill.Parent             = track_bg
+    fill.Size                = UDim2.new(0, 0, 1, 0)
+    fill.BackgroundColor3    = Color3.fromRGB(0, 160, 255)
+    fill.BorderSizePixel     = 0
+    fill.ZIndex              = 62
+    fill.Parent              = track_bg
     Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
 
     local knob = Instance.new("Frame")
-    knob.Size               = UDim2.new(0, 18, 0, 18)
-    knob.AnchorPoint        = Vector2.new(0.5, 0.5)
-    knob.BackgroundColor3   = Color3.fromRGB(0, 200, 255)
-    knob.BorderSizePixel    = 0
-    knob.ZIndex             = 63
-    knob.Parent             = track_bg
+    knob.Size                = UDim2.new(0, 18, 0, 18)
+    knob.AnchorPoint         = Vector2.new(0.5, 0.5)
+    knob.BackgroundColor3    = Color3.fromRGB(0, 200, 255)
+    knob.BorderSizePixel     = 0
+    knob.ZIndex              = 63
+    knob.Parent              = track_bg
     Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
-    -- Helper: set visuals + fire callback for a 0..1 percent
     local function applyPercent(p)
         p = math.clamp(p, 0, 1)
         local val = math.floor(cfg.min + p * (cfg.max - cfg.min))
@@ -450,20 +464,17 @@ local function makeSlider(cfg)
         cfg.onChange(val)
     end
 
-    -- Initialise at default
     applyPercent((cfg.default - cfg.min) / (cfg.max - cfg.min))
 
-    -- Dragging logic
     local sliding = false
 
     local function updateFromMouse()
-        local mx    = UserInputService:GetMouseLocation().X
-        local left  = track_bg.AbsolutePosition.X
-        local w     = track_bg.AbsoluteSize.X
+        local mx   = UserInputService:GetMouseLocation().X
+        local left = track_bg.AbsolutePosition.X
+        local w    = track_bg.AbsoluteSize.X
         applyPercent((mx - left) / w)
     end
 
-    -- Knob or track click starts slide
     local function beginSlide(inp)
         if inp.UserInputType == Enum.UserInputType.MouseButton1 then
             sliding = true
@@ -488,36 +499,28 @@ local function makeSlider(cfg)
 end
 
 makeSlider({
-    parent   = settingsPanel,
-    yOffset  = 42,
-    label    = "Push Strength",
-    min      = 1, max = 2500, default = 150,
+    parent = settingsPanel, yOffset = 42,
+    label = "Push Strength", min = 1, max = 2500, default = 150,
     onChange = function(v) pushStrength = v end,
 })
 makeSlider({
-    parent   = settingsPanel,
-    yOffset  = 112,
-    label    = "Fling Strength",
-    min      = 1, max = 2000, default = 300,
+    parent = settingsPanel, yOffset = 112,
+    label = "Fling Strength", min = 1, max = 2000, default = 300,
     onChange = function(v) flingStrength = v end,
 })
 makeSlider({
-    parent   = settingsPanel,
-    yOffset  = 182,
-    label    = "Push Range",
-    min      = 1, max = 500, default = 15,
+    parent = settingsPanel, yOffset = 182,
+    label = "Push Range", min = 1, max = 500, default = 15,
     onChange = function(v) pushRange = v end,
 })
 
 -- ============================================================
---  VISIBILITY TOGGLE  (HIDE / SHOW)
+--  VISIBILITY TOGGLE
 -- ============================================================
 local guiVisible = true
 
 local function setVisible(v)
-    guiVisible    = v
-    -- Keep topBar visible always so user can show again
-    -- Instead hide the content + bottom buttons, shrink frame
+    guiVisible       = v
     scrollFrame.Visible  = v
     contentFrame.Visible = v
     stopBtn.Visible      = v
@@ -526,7 +529,7 @@ local function setVisible(v)
         mainFrame.Size = UDim2.new(0, 430, 0, 420)
         toggleBtn.Text = "HIDE"
     else
-        mainFrame.Size = UDim2.new(0, 430, 0, 38)  -- collapse to bar only
+        mainFrame.Size = UDim2.new(0, 430, 0, 38)
         toggleBtn.Text = "SHOW"
     end
 end
@@ -536,10 +539,8 @@ track(toggleBtn.MouseButton1Click:Connect(function()
 end))
 
 -- ============================================================
---  BUTTON LOGIC
+--  NPC UTILITIES
 -- ============================================================
-
--- Utility: get NPC humanoid from workspace descendants
 local function allNPCRoots()
     local list = {}
     for _, d in ipairs(workspace:GetDescendants()) do
@@ -553,29 +554,29 @@ local function allNPCRoots()
     return list
 end
 
--- ── Kill NPCs Loop ───────────────────────────────────────────
+-- ============================================================
+--  BUTTON LOGIC
+-- ============================================================
+
+-- Kill NPCs Loop
 track(buttons["Kill NPCs (Loop)"].MouseButton1Click:Connect(function()
     states.killNPCs = not states.killNPCs
-    local btn = buttons["Kill NPCs (Loop)"]
-    btn.Text = states.killNPCs and "⏹ Kill Loop: ON" or "Kill NPCs (Loop)"
+    buttons["Kill NPCs (Loop)"].Text = states.killNPCs and "⏹ Kill Loop: ON" or "Kill NPCs (Loop)"
     if states.killNPCs then
         task.spawn(function()
             local ep = loopEpoch
             while states.killNPCs and ep == loopEpoch do
-                for _, e in ipairs(allNPCRoots()) do
-                    e.hum.Health = 0
-                end
+                for _, e in ipairs(allNPCRoots()) do e.hum.Health = 0 end
                 task.wait(0.5)
             end
         end)
     end
 end))
 
--- ── Push NPCs Loop ───────────────────────────────────────────
+-- Push NPCs Loop
 track(buttons["Push NPCs (Loop)"].MouseButton1Click:Connect(function()
     states.pushNPCs = not states.pushNPCs
-    local btn = buttons["Push NPCs (Loop)"]
-    btn.Text = states.pushNPCs and "⏹ Push Loop: ON" or "Push NPCs (Loop)"
+    buttons["Push NPCs (Loop)"].Text = states.pushNPCs and "⏹ Push Loop: ON" or "Push NPCs (Loop)"
     if states.pushNPCs then
         task.spawn(function()
             local ep = loopEpoch
@@ -597,7 +598,7 @@ track(buttons["Push NPCs (Loop)"].MouseButton1Click:Connect(function()
     end
 end))
 
--- ── Fling All ────────────────────────────────────────────────
+-- Fling All
 track(buttons["Fling All NPCs"].MouseButton1Click:Connect(function()
     for _, e in ipairs(allNPCRoots()) do
         local dir = Vector3.new(math.random() * 2 - 1, 0.5, math.random() * 2 - 1).Unit
@@ -605,21 +606,21 @@ track(buttons["Fling All NPCs"].MouseButton1Click:Connect(function()
     end
 end))
 
--- ── Bring All ────────────────────────────────────────────────
+-- Bring All
 track(buttons["Bring All NPCs"].MouseButton1Click:Connect(function()
     local char  = player.Character
     local myHRP = char and char:FindFirstChild("HumanoidRootPart")
     if not myHRP then return end
-    for i, e in ipairs(allNPCRoots()) do
-        -- stagger positions in a ring
-        local angle  = (i / math.max(1, #allNPCRoots())) * math.pi * 2
+    local npcs = allNPCRoots()
+    for i, e in ipairs(npcs) do
+        local angle  = (i / math.max(1, #npcs)) * math.pi * 2
         local offset = CFrame.new(math.cos(angle) * 4, 0, math.sin(angle) * 4)
         e.hrp.CFrame   = myHRP.CFrame * offset
-        e.hrp.Velocity = Vector3.new(0, 0, 0)
+        e.hrp.Velocity  = Vector3.new(0, 0, 0)
     end
 end))
 
--- ── Delete All ───────────────────────────────────────────────
+-- Delete All
 track(buttons["Delete All NPCs"].MouseButton1Click:Connect(function()
     for _, d in ipairs(workspace:GetDescendants()) do
         if d:IsA("Humanoid") and not Players:GetPlayerFromCharacter(d.Parent) then
@@ -628,57 +629,52 @@ track(buttons["Delete All NPCs"].MouseButton1Click:Connect(function()
     end
 end))
 
--- ── Toggle click modes ───────────────────────────────────────
-local function makeToggle(label, stateKey)
-    local btn    = buttons[label]
-    local base   = label
-    local onText = "⏹ " .. label .. ": ON"
-    track(btn.MouseButton1Click:Connect(function()
-        -- Disable other click modes first
-        for _, key in ipairs({"viewNPC", "killClick", "fling"}) do
-            if key ~= stateKey and states[key] then
-                states[key] = false
-                -- Reset sibling button text
-                local sibDef = ({
-                    viewNPC   = "View NPC (Click)",
-                    killClick = "Kill NPC (Click)",
-                    fling     = "Fling NPC (Click)",
-                })[key]
-                if buttons[sibDef] then
-                    buttons[sibDef].Text = sibDef
-                end
+-- Click mode toggles (mutual exclusion for click modes)
+local clickModes = {
+    { label = "View NPC (Click)",  key = "viewNPC"   },
+    { label = "Kill NPC (Click)",  key = "killClick" },
+    { label = "Fling NPC (Click)", key = "fling"     },
+}
+
+for _, mode in ipairs(clickModes) do
+    track(buttons[mode.label].MouseButton1Click:Connect(function()
+        -- Turn off other click modes
+        for _, other in ipairs(clickModes) do
+            if other.key ~= mode.key and states[other.key] then
+                states[other.key] = false
+                buttons[other.label].Text = other.label
             end
         end
-        states[stateKey] = not states[stateKey]
-        btn.Text = states[stateKey] and onText or base
+        -- Toggle this one
+        states[mode.key] = not states[mode.key]
+        buttons[mode.label].Text = states[mode.key] and ("⏹ " .. mode.label .. ": ON") or mode.label
+
+        -- If turning off view mode, also unview
+        if mode.key == "viewNPC" and not states.viewNPC then
+            if viewingNPC then
+                unviewNPC()
+            end
+        end
     end))
 end
 
-makeToggle("View NPC (Click)",  "viewNPC")
-makeToggle("Kill NPC (Click)",  "killClick")
-makeToggle("Fling NPC (Click)", "fling")
-
--- ── Stop All ─────────────────────────────────────────────────
+-- Stop All
 track(stopBtn.MouseButton1Click:Connect(function()
     resetStates()
-    -- Reset all button texts
+    hideUnviewButton()
     for _, def in ipairs(buttonDefs) do
-        if buttons[def.label] then
-            buttons[def.label].Text = def.label
-        end
+        if buttons[def.label] then buttons[def.label].Text = def.label end
     end
 end))
 
--- ── Anchor Toggle ─────────────────────────────────────────────
+-- Anchor Toggle
 track(anchorBtn.MouseButton1Click:Connect(function()
     anchorActive = not anchorActive
-    anchorBtn.Text            = "Anchor Toggle: " .. (anchorActive and "ON" or "OFF")
-    anchorBtn.BackgroundColor3 = anchorActive
-        and Color3.fromRGB(0, 120, 60)
-        or  Color3.fromRGB(80, 40, 40)
+    anchorBtn.Text             = "Anchor Toggle: " .. (anchorActive and "ON" or "OFF")
+    anchorBtn.BackgroundColor3 = anchorActive and Color3.fromRGB(0, 120, 60) or Color3.fromRGB(80, 40, 40)
 end))
 
--- ── Settings open/close ───────────────────────────────────────
+-- Settings open/close
 track(settingsBtn.MouseButton1Click:Connect(function()
     settingsPanel.Visible = not settingsPanel.Visible
 end))
@@ -687,13 +683,13 @@ track(setCloseBtn.MouseButton1Click:Connect(function()
 end))
 
 -- ============================================================
---  CLICK HANDLER  (mouse click on world)
+--  CLICK HANDLER
 -- ============================================================
 track(mouse.Button1Down:Connect(function()
     local target = mouse.Target
     if not target then return end
 
-    -- Anchor toggle takes priority
+    -- Anchor toggle
     if anchorActive and target:IsA("BasePart") then
         target.Anchored = not target.Anchored
         return
@@ -708,7 +704,15 @@ track(mouse.Button1Down:Connect(function()
     if not isNPC then return end
 
     if states.viewNPC then
+        -- Lock camera to this NPC
         workspace.CurrentCamera.CameraSubject = hum
+        viewingNPC     = true
+        viewedHumanoid = hum
+        showUnviewButton()
+
+        -- Update unview button text with NPC name
+        local npcName = model.Name or "NPC"
+        unviewBtn.Text = "👁 Unview: " .. npcName
 
     elseif states.killClick then
         hum.Health = 0
@@ -719,27 +723,47 @@ track(mouse.Button1Down:Connect(function()
     end
 end))
 
+-- Monitor viewed NPC: if it dies or gets removed, auto-unview
+task.spawn(function()
+    while gui.Parent do
+        if viewingNPC and viewedHumanoid then
+            -- Check if humanoid still exists and is alive
+            local ok = pcall(function()
+                local _ = viewedHumanoid.Health
+                local _ = viewedHumanoid.Parent
+            end)
+            if not ok or not viewedHumanoid.Parent or viewedHumanoid.Health <= 0 then
+                unviewNPC()
+            end
+        end
+        task.wait(0.5)
+    end
+end)
+
 -- ============================================================
 --  HOTKEYS
 -- ============================================================
 track(UserInputService.InputBegan:Connect(function(inp, gameProcessed)
-    -- X = stop all (allow even if game processed)
     if inp.KeyCode == Enum.KeyCode.X and not gameProcessed then
         resetStates()
+        hideUnviewButton()
         for _, def in ipairs(buttonDefs) do
             if buttons[def.label] then buttons[def.label].Text = def.label end
         end
     end
 
-    -- C = toggle visibility  (works regardless of gameProcessed for GUI clicks)
     if inp.KeyCode == Enum.KeyCode.C then
         setVisible(not guiVisible)
     end
 
-    -- Insert = same as C
     if inp.KeyCode == Enum.KeyCode.Insert then
         setVisible(not guiVisible)
     end
+
+    -- V key = quick unview
+    if inp.KeyCode == Enum.KeyCode.V and viewingNPC then
+        unviewNPC()
+    end
 end))
 
-print("[NPC Control Panel v4] Loaded. C / Insert = show/hide | X = stop all")
+print("[NPC Control Panel v5] Loaded | C/Insert = show/hide | X = stop all | V = unview NPC")
