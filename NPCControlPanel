@@ -10,12 +10,7 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
-
-if not player then
-    player = Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
-    player = Players.LocalPlayer
-end
-
+if not player then player = Players:GetPropertyChangedSignal("LocalPlayer"):Wait(); player = Players.LocalPlayer end
 local mouse = player:GetMouse()
 
 local function getUIParent()
@@ -42,26 +37,18 @@ local flingStrength = 300
 local bringAttempts = 5
 local viewingNPC = false
 local viewedHumanoid = nil
-
 local bringFilter = {}
 local deleteFilter = {}
-
--- Track anchored NPCs: key = model fullname, value = {model, hrp, hum, originalWalkSpeed, originalJumpPower}
-local anchoredNPCs = {}
+local anchoredNPCs = {} -- key = unique id, value = {model, hrp, hum, name, origWS, origJP, origJH}
+local anchoredCounter = 0
 
 local function cleanup()
     loopEpoch = loopEpoch + 1
     for k in pairs(states) do states[k] = false end
-    for _, c in ipairs(connections) do
-        if typeof(c) == "RBXScriptConnection" and c.Connected then c:Disconnect() end
-    end
+    for _, c in ipairs(connections) do if typeof(c) == "RBXScriptConnection" and c.Connected then c:Disconnect() end end
     connections = {}
-    local function removeFrom(p)
-        if p then local old = p:FindFirstChild("NPCControlGUI_v8e") if old then old:Destroy() end end
-    end
-    removeFrom(uiParent)
-    pcall(removeFrom, player:FindFirstChild("PlayerGui"))
-    pcall(removeFrom, game:GetService("CoreGui"))
+    local function removeFrom(p) if p then local old = p:FindFirstChild("NPCControlGUI_v8f") if old then old:Destroy() end end end
+    removeFrom(uiParent); pcall(removeFrom, player:FindFirstChild("PlayerGui")); pcall(removeFrom, game:GetService("CoreGui"))
 end
 _G[CONTROL_KEY] = cleanup
 
@@ -70,12 +57,7 @@ local function resetCamera()
     local char = player.Character
     if char then local hum = char:FindFirstChildOfClass("Humanoid") if hum then workspace.CurrentCamera.CameraSubject = hum end end
 end
-
-local function resetStates()
-    loopEpoch = loopEpoch + 1
-    for k in pairs(states) do states[k] = false end
-    resetCamera()
-end
+local function resetStates() loopEpoch = loopEpoch + 1; for k in pairs(states) do states[k] = false end; resetCamera() end
 
 local function allNPCRoots()
     local list = {}
@@ -90,9 +72,31 @@ end
 
 local function getNPCKey(model) return model:GetFullName() end
 
+-- Build display names with numbering for duplicates
+local function buildDisplayNames(npcList)
+    local nameCounts = {}
+    local nameIndices = {}
+    -- First pass: count
+    for _, e in ipairs(npcList) do
+        local n = e.model.Name
+        nameCounts[n] = (nameCounts[n] or 0) + 1
+    end
+    -- Second pass: assign numbers
+    local result = {}
+    for _, e in ipairs(npcList) do
+        local n = e.model.Name
+        if nameCounts[n] > 1 then
+            nameIndices[n] = (nameIndices[n] or 0) + 1
+            table.insert(result, {e = e, display = n .. " (" .. nameIndices[n] .. ")"})
+        else
+            table.insert(result, {e = e, display = n})
+        end
+    end
+    return result
+end
+
 local function ragdollNPC(model)
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
+    local hum = model:FindFirstChildOfClass("Humanoid"); if not hum then return end
     pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
     pcall(function() hum:ChangeState(Enum.HumanoidStateType.Ragdoll) end)
     pcall(function() hum.PlatformStand = true end)
@@ -100,11 +104,11 @@ local function ragdollNPC(model)
         for _, j in ipairs(model:GetDescendants()) do
             if j:IsA("Motor6D") and not j:GetAttribute("_ragdolled") then
                 j:SetAttribute("_ragdolled", true)
-                local a0 = Instance.new("Attachment"); a0.CFrame = j.C0; a0.Parent = j.Part0
-                local a1 = Instance.new("Attachment"); a1.CFrame = j.C1; a1.Parent = j.Part1
-                local b = Instance.new("BallSocketConstraint"); b.Attachment0=a0; b.Attachment1=a1
-                b.LimitsEnabled=true; b.TwistLimitsEnabled=true; b.UpperAngle=45
-                b.TwistLowerAngle=-45; b.TwistUpperAngle=45; b.Parent=j.Parent; j.Enabled=false
+                local a0=Instance.new("Attachment"); a0.CFrame=j.C0; a0.Parent=j.Part0
+                local a1=Instance.new("Attachment"); a1.CFrame=j.C1; a1.Parent=j.Part1
+                local b=Instance.new("BallSocketConstraint"); b.Attachment0=a0; b.Attachment1=a1
+                b.LimitsEnabled=true; b.TwistLimitsEnabled=true; b.UpperAngle=45; b.TwistLowerAngle=-45; b.TwistUpperAngle=45
+                b.Parent=j.Parent; j.Enabled=false
             end
         end
     end)
@@ -112,107 +116,70 @@ local function ragdollNPC(model)
     if hrp then hrp.Velocity = hrp.Velocity + Vector3.new(0,30,0) end
 end
 
--- ============================================================
---  NUCLEAR BRING
--- ============================================================
+-- NUCLEAR BRING
 local function nukeNPCMovement(model, hrp, hum)
-    pcall(function()
-        for _, obj in ipairs(model:GetDescendants()) do
-            if obj:IsA("BodyVelocity") or obj:IsA("BodyPosition") or obj:IsA("BodyGyro")
-                or obj:IsA("BodyForce") or obj:IsA("BodyThrust") or obj:IsA("BodyAngularVelocity")
-                or obj:IsA("LinearVelocity") or obj:IsA("AlignPosition") or obj:IsA("AlignOrientation")
-                or obj:IsA("VectorForce") or obj:IsA("LineForce") or obj:IsA("Torque") then
-                obj:Destroy()
-            end
+    pcall(function() for _, obj in ipairs(model:GetDescendants()) do
+        if obj:IsA("BodyVelocity") or obj:IsA("BodyPosition") or obj:IsA("BodyGyro") or obj:IsA("BodyForce") or obj:IsA("BodyThrust") or obj:IsA("BodyAngularVelocity") or obj:IsA("LinearVelocity") or obj:IsA("AlignPosition") or obj:IsA("AlignOrientation") or obj:IsA("VectorForce") or obj:IsA("LineForce") or obj:IsA("Torque") then obj:Destroy() end
+    end end)
+    pcall(function() for _, obj in ipairs(model:GetDescendants()) do
+        if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then pcall(function() obj.Disabled=true end); pcall(function() obj:Destroy() end) end
+    end end)
+    pcall(function() for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") then pcall(function() part.Velocity=Vector3.new(0,0,0) end); pcall(function() part.AssemblyLinearVelocity=Vector3.new(0,0,0) end); pcall(function() part.AssemblyAngularVelocity=Vector3.new(0,0,0) end) end
+    end end)
+    local oWS,oJP,oJH = 16,50,7.2
+    pcall(function() oWS=hum.WalkSpeed end); pcall(function() oJP=hum.JumpPower end); pcall(function() oJH=hum.JumpHeight end)
+    pcall(function() hum.WalkSpeed=0; hum.JumpPower=0; hum.JumpHeight=0 end)
+    pcall(function() hum.PlatformStand=true end); pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+    pcall(function() hrp.Anchored=true end)
+    pcall(function() for _, obj in ipairs(hrp:GetChildren()) do
+        if obj:IsA("Weld") or obj:IsA("WeldConstraint") then
+            local p0=obj:IsA("Weld") and obj.Part0 or nil; local p1=obj:IsA("Weld") and obj.Part1 or nil
+            if p0 and not p0:IsDescendantOf(model) then obj:Destroy() elseif p1 and not p1:IsDescendantOf(model) then obj:Destroy() end
         end
-    end)
-    pcall(function()
-        for _, obj in ipairs(model:GetDescendants()) do
-            if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-                pcall(function() obj.Disabled = true end)
-                pcall(function() obj:Destroy() end)
-            end
-        end
-    end)
-    pcall(function()
-        for _, part in ipairs(model:GetDescendants()) do
-            if part:IsA("BasePart") then
-                pcall(function() part.Velocity = Vector3.new(0,0,0) end)
-                pcall(function() part.AssemblyLinearVelocity = Vector3.new(0,0,0) end)
-                pcall(function() part.AssemblyAngularVelocity = Vector3.new(0,0,0) end)
-            end
-        end
-    end)
-    -- Save original values before nuking
-    local origWS, origJP, origJH = 16, 50, 7.2
-    pcall(function() origWS = hum.WalkSpeed end)
-    pcall(function() origJP = hum.JumpPower end)
-    pcall(function() origJH = hum.JumpHeight end)
-    pcall(function() hum.WalkSpeed = 0; hum.JumpPower = 0; hum.JumpHeight = 0 end)
-    pcall(function() hum.PlatformStand = true end)
-    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
-    pcall(function() hrp.Anchored = true end)
-    pcall(function()
-        for _, obj in ipairs(hrp:GetChildren()) do
-            if obj:IsA("Weld") or obj:IsA("WeldConstraint") then
-                local p0 = obj:IsA("Weld") and obj.Part0 or nil
-                local p1 = obj:IsA("Weld") and obj.Part1 or nil
-                if p0 and not p0:IsDescendantOf(model) then obj:Destroy()
-                elseif p1 and not p1:IsDescendantOf(model) then obj:Destroy() end
-            end
-        end
-    end)
-    return origWS, origJP, origJH
+    end end)
+    return oWS, oJP, oJH
 end
 
-local function bringNPCToPos(e, targetCFrame)
-    local origWS, origJP, origJH = 16, 50, 7.2
+-- Forward declare refreshAnchoredList
+local refreshAnchoredList
+
+local function bringNPCToPos(e, targetCFrame, displayName)
+    local oWS, oJP, oJH = 16, 50, 7.2
     pcall(function()
         e.hrp.Anchored = false
         e.hrp.CFrame = targetCFrame
-        origWS, origJP, origJH = nukeNPCMovement(e.model, e.hrp, e.hum)
+        oWS, oJP, oJH = nukeNPCMovement(e.model, e.hrp, e.hum)
     end)
-    -- Track this NPC as anchored
-    local key = getNPCKey(e.model)
-    if not anchoredNPCs[key] then
-        anchoredNPCs[key] = {
-            model = e.model,
-            hrp = e.hrp,
-            hum = e.hum,
-            name = e.model.Name,
-            origWS = origWS,
-            origJP = origJP,
-            origJH = origJH,
-        }
-    end
-    return origWS, origJP, origJH
+    -- Track with unique ID
+    anchoredCounter = anchoredCounter + 1
+    local uid = "anpc_" .. anchoredCounter
+    anchoredNPCs[uid] = {
+        model=e.model, hrp=e.hrp, hum=e.hum,
+        name=displayName or e.model.Name,
+        origWS=oWS, origJP=oJP, origJH=oJH,
+    }
+    return oWS, oJP, oJH
 end
 
 local function isNPCAtPos(hrp, targetCFrame, threshold)
     local ok, dist = pcall(function() return (hrp.Position - targetCFrame.Position).Magnitude end)
-    if ok then return dist <= (threshold or 2) end
-    return false
+    if ok then return dist <= (threshold or 2) end; return false
 end
 
--- Unanchor / restore NPC
-local function unanchorNPC(key)
-    local data = anchoredNPCs[key]
-    if not data then return end
+local function unanchorNPC(uid)
+    local data = anchoredNPCs[uid]; if not data then return end
     pcall(function()
-        data.hrp.Anchored = false
-        data.hum.PlatformStand = false
-        data.hum.WalkSpeed = data.origWS or 16
-        data.hum.JumpPower = data.origJP or 50
+        data.hrp.Anchored = false; data.hum.PlatformStand = false
+        data.hum.WalkSpeed = data.origWS or 16; data.hum.JumpPower = data.origJP or 50
         data.hum.JumpHeight = data.origJH or 7.2
         pcall(function() data.hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
     end)
-    anchoredNPCs[key] = nil
+    anchoredNPCs[uid] = nil
 end
 
 local function unanchorAllNPCs()
-    for key, _ in pairs(anchoredNPCs) do
-        unanchorNPC(key)
-    end
+    for uid, _ in pairs(anchoredNPCs) do unanchorNPC(uid) end
     anchoredNPCs = {}
 end
 
@@ -220,45 +187,38 @@ end
 --  GUI
 -- ============================================================
 local gui = Instance.new("ScreenGui")
-gui.Name = "NPCControlGUI_v8e"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
-gui.DisplayOrder = 2147483647; gui.ZIndexBehavior = Enum.ZIndexBehavior.Global; gui.Parent = uiParent
+gui.Name="NPCControlGUI_v8f"; gui.ResetOnSpawn=false; gui.IgnoreGuiInset=true
+gui.DisplayOrder=2147483647; gui.ZIndexBehavior=Enum.ZIndexBehavior.Global; gui.Parent=uiParent
 
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainFrame"; mainFrame.Size = UDim2.new(0,430,0,460)
-mainFrame.Position = UDim2.new(0.5,-215,0.2,0)
-mainFrame.BackgroundColor3 = Color3.fromRGB(22,22,30); mainFrame.BorderSizePixel = 0
-mainFrame.ZIndex = 2; mainFrame.Parent = gui
-Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0,10)
+local mainFrame = Instance.new("Frame"); mainFrame.Name="MainFrame"; mainFrame.Size=UDim2.new(0,430,0,460)
+mainFrame.Position=UDim2.new(0.5,-215,0.2,0); mainFrame.BackgroundColor3=Color3.fromRGB(22,22,30)
+mainFrame.BorderSizePixel=0; mainFrame.ZIndex=2; mainFrame.Parent=gui
+Instance.new("UICorner",mainFrame).CornerRadius=UDim.new(0,10)
 
-local shF = Instance.new("Frame"); shF.Size=UDim2.new(1,12,1,12); shF.Position=UDim2.new(0,-6,0,-6)
-shF.BackgroundColor3=Color3.fromRGB(0,0,0); shF.BackgroundTransparency=0.6; shF.BorderSizePixel=0
-shF.ZIndex=1; shF.Parent=mainFrame; Instance.new("UICorner",shF).CornerRadius=UDim.new(0,14)
+local shF=Instance.new("Frame"); shF.Size=UDim2.new(1,12,1,12); shF.Position=UDim2.new(0,-6,0,-6)
+shF.BackgroundColor3=Color3.fromRGB(0,0,0); shF.BackgroundTransparency=0.6; shF.BorderSizePixel=0; shF.ZIndex=1; shF.Parent=mainFrame
+Instance.new("UICorner",shF).CornerRadius=UDim.new(0,14)
 
-local topBar = Instance.new("Frame"); topBar.Size=UDim2.new(1,0,0,38)
-topBar.BackgroundColor3=Color3.fromRGB(30,30,42); topBar.BorderSizePixel=0; topBar.ZIndex=3; topBar.Parent=mainFrame
-Instance.new("UICorner",topBar).CornerRadius=UDim.new(0,10)
-local tbP = Instance.new("Frame"); tbP.Size=UDim2.new(1,0,0,10); tbP.Position=UDim2.new(0,0,1,-10)
+local topBar=Instance.new("Frame"); topBar.Size=UDim2.new(1,0,0,38); topBar.BackgroundColor3=Color3.fromRGB(30,30,42)
+topBar.BorderSizePixel=0; topBar.ZIndex=3; topBar.Parent=mainFrame; Instance.new("UICorner",topBar).CornerRadius=UDim.new(0,10)
+local tbP=Instance.new("Frame"); tbP.Size=UDim2.new(1,0,0,10); tbP.Position=UDim2.new(0,0,1,-10)
 tbP.BackgroundColor3=Color3.fromRGB(30,30,42); tbP.BorderSizePixel=0; tbP.ZIndex=3; tbP.Parent=topBar
 
-local tL = Instance.new("TextLabel"); tL.Size=UDim2.new(1,-170,1,0); tL.Position=UDim2.new(0,12,0,0)
+local tL=Instance.new("TextLabel"); tL.Size=UDim2.new(1,-170,1,0); tL.Position=UDim2.new(0,12,0,0)
 tL.BackgroundTransparency=1; tL.Text="⚙  NPC Control Panel"; tL.Font=Enum.Font.GothamBold
-tL.TextColor3=Color3.fromRGB(210,210,255); tL.TextSize=14; tL.TextXAlignment=Enum.TextXAlignment.Left
-tL.ZIndex=4; tL.Parent=topBar
+tL.TextColor3=Color3.fromRGB(210,210,255); tL.TextSize=14; tL.TextXAlignment=Enum.TextXAlignment.Left; tL.ZIndex=4; tL.Parent=topBar
 
-local setB = Instance.new("TextButton"); setB.Size=UDim2.new(0,40,0,26); setB.Position=UDim2.new(1,-156,0.5,-13)
+local setB=Instance.new("TextButton"); setB.Size=UDim2.new(0,40,0,26); setB.Position=UDim2.new(1,-156,0.5,-13)
 setB.BackgroundColor3=Color3.fromRGB(55,55,75); setB.Text="SET"; setB.Font=Enum.Font.GothamBold
-setB.TextColor3=Color3.new(1,1,1); setB.TextSize=10; setB.ZIndex=10; setB.Parent=topBar
-Instance.new("UICorner",setB).CornerRadius=UDim.new(0,5)
+setB.TextColor3=Color3.new(1,1,1); setB.TextSize=10; setB.ZIndex=10; setB.Parent=topBar; Instance.new("UICorner",setB).CornerRadius=UDim.new(0,5)
 
-local togB = Instance.new("TextButton"); togB.Size=UDim2.new(0,40,0,26); togB.Position=UDim2.new(1,-112,0.5,-13)
+local togB=Instance.new("TextButton"); togB.Size=UDim2.new(0,40,0,26); togB.Position=UDim2.new(1,-112,0.5,-13)
 togB.BackgroundColor3=Color3.fromRGB(55,75,55); togB.Text="HIDE"; togB.Font=Enum.Font.GothamBold
-togB.TextColor3=Color3.new(1,1,1); togB.TextSize=10; togB.ZIndex=10; togB.Parent=topBar
-Instance.new("UICorner",togB).CornerRadius=UDim.new(0,5)
+togB.TextColor3=Color3.new(1,1,1); togB.TextSize=10; togB.ZIndex=10; togB.Parent=topBar; Instance.new("UICorner",togB).CornerRadius=UDim.new(0,5)
 
-local updB = Instance.new("TextButton"); updB.Size=UDim2.new(0,60,0,26); updB.Position=UDim2.new(1,-66,0.5,-13)
+local updB=Instance.new("TextButton"); updB.Size=UDim2.new(0,60,0,26); updB.Position=UDim2.new(1,-66,0.5,-13)
 updB.BackgroundColor3=Color3.fromRGB(200,140,30); updB.Text="📰 UPD"; updB.Font=Enum.Font.GothamBold
-updB.TextColor3=Color3.new(1,1,1); updB.TextSize=10; updB.ZIndex=10; updB.Parent=topBar
-Instance.new("UICorner",updB).CornerRadius=UDim.new(0,5)
+updB.TextColor3=Color3.new(1,1,1); updB.TextSize=10; updB.ZIndex=10; updB.Parent=topBar; Instance.new("UICorner",updB).CornerRadius=UDim.new(0,5)
 
 task.spawn(function() local pc=0; while gui.Parent and pc<10 do
     TweenService:Create(updB,TweenInfo.new(0.5,Enum.EasingStyle.Sine),{BackgroundColor3=Color3.fromRGB(255,180,50)}):Play(); task.wait(0.5)
@@ -268,64 +228,39 @@ end end)
 -- DRAGGING
 local function makeDraggable(fm, h)
     local dr=false; local dd=Vector2.new(0,0)
-    track(h.InputBegan:Connect(function(i) if i.UserInputType~=Enum.UserInputType.MouseButton1 then return end
-        dr=true; local m=UserInputService:GetMouseLocation(); local f=fm.AbsolutePosition; dd=Vector2.new(m.X-f.X,m.Y-f.Y) end))
+    track(h.InputBegan:Connect(function(i) if i.UserInputType~=Enum.UserInputType.MouseButton1 then return end; dr=true
+        local m=UserInputService:GetMouseLocation(); local f=fm.AbsolutePosition; dd=Vector2.new(m.X-f.X,m.Y-f.Y) end))
     track(UserInputService.InputChanged:Connect(function(i) if not dr or i.UserInputType~=Enum.UserInputType.MouseMovement then return end
         local m=UserInputService:GetMouseLocation(); fm.Position=UDim2.new(0,m.X-dd.X,0,m.Y-dd.Y) end))
     track(UserInputService.InputEnded:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then dr=false end end))
 end
 makeDraggable(mainFrame, topBar)
 
--- UPDATE PANEL (compact)
-local uP = Instance.new("Frame"); uP.Name="UpdatePanel"; uP.Size=UDim2.new(0,420,0,480)
-uP.Position=UDim2.new(0.5,-210,0.1,0); uP.BackgroundColor3=Color3.fromRGB(16,16,24)
-uP.Visible=false; uP.ZIndex=300; uP.Parent=gui
+-- UPDATE PANEL
+local uP=Instance.new("Frame"); uP.Name="UpdatePanel"; uP.Size=UDim2.new(0,420,0,480)
+uP.Position=UDim2.new(0.5,-210,0.1,0); uP.BackgroundColor3=Color3.fromRGB(16,16,24); uP.Visible=false; uP.ZIndex=300; uP.Parent=gui
 Instance.new("UICorner",uP).CornerRadius=UDim.new(0,12)
+local uPS=Instance.new("Frame"); uPS.Size=UDim2.new(1,14,1,14); uPS.Position=UDim2.new(0,-7,0,-7); uPS.BackgroundColor3=Color3.fromRGB(0,0,0); uPS.BackgroundTransparency=0.5; uPS.BorderSizePixel=0; uPS.ZIndex=299; uPS.Parent=uP; Instance.new("UICorner",uPS).CornerRadius=UDim.new(0,16)
+local uPT=Instance.new("Frame"); uPT.Size=UDim2.new(1,0,0,42); uPT.BackgroundColor3=Color3.fromRGB(200,140,30); uPT.BorderSizePixel=0; uPT.ZIndex=301; uPT.Parent=uP; Instance.new("UICorner",uPT).CornerRadius=UDim.new(0,12)
+local uPTP=Instance.new("Frame"); uPTP.Size=UDim2.new(1,0,0,12); uPTP.Position=UDim2.new(0,0,1,-12); uPTP.BackgroundColor3=Color3.fromRGB(200,140,30); uPTP.BorderSizePixel=0; uPTP.ZIndex=301; uPTP.Parent=uPT
+local uPTL=Instance.new("TextLabel"); uPTL.Size=UDim2.new(1,-50,1,0); uPTL.Position=UDim2.new(0,14,0,0); uPTL.BackgroundTransparency=1; uPTL.Text="📰  UPD: Version 8f"; uPTL.Font=Enum.Font.GothamBold; uPTL.TextColor3=Color3.fromRGB(20,20,30); uPTL.TextSize=16; uPTL.TextXAlignment=Enum.TextXAlignment.Left; uPTL.ZIndex=302; uPTL.Parent=uPT
+local uPCB=Instance.new("TextButton"); uPCB.Size=UDim2.new(0,30,0,30); uPCB.Position=UDim2.new(1,-36,0.5,-15); uPCB.BackgroundColor3=Color3.fromRGB(160,90,10); uPCB.Text="✕"; uPCB.Font=Enum.Font.GothamBold; uPCB.TextColor3=Color3.new(1,1,1); uPCB.TextSize=14; uPCB.ZIndex=303; uPCB.Parent=uPT; Instance.new("UICorner",uPCB).CornerRadius=UDim.new(0,6)
+local uPSc=Instance.new("ScrollingFrame"); uPSc.Size=UDim2.new(1,-20,1,-56); uPSc.Position=UDim2.new(0,10,0,48); uPSc.BackgroundColor3=Color3.fromRGB(12,12,18); uPSc.BackgroundTransparency=0.3; uPSc.BorderSizePixel=0; uPSc.ScrollBarThickness=5; uPSc.ScrollBarImageColor3=Color3.fromRGB(200,150,40); uPSc.CanvasSize=UDim2.new(0,0,0,0); uPSc.ElasticBehavior=Enum.ElasticBehavior.Never; uPSc.ZIndex=301; uPSc.Parent=uP; Instance.new("UICorner",uPSc).CornerRadius=UDim.new(0,8)
 
-local uPS = Instance.new("Frame"); uPS.Size=UDim2.new(1,14,1,14); uPS.Position=UDim2.new(0,-7,0,-7)
-uPS.BackgroundColor3=Color3.fromRGB(0,0,0); uPS.BackgroundTransparency=0.5; uPS.BorderSizePixel=0
-uPS.ZIndex=299; uPS.Parent=uP; Instance.new("UICorner",uPS).CornerRadius=UDim.new(0,16)
-
-local uPT = Instance.new("Frame"); uPT.Size=UDim2.new(1,0,0,42); uPT.BackgroundColor3=Color3.fromRGB(200,140,30)
-uPT.BorderSizePixel=0; uPT.ZIndex=301; uPT.Parent=uP
-Instance.new("UICorner",uPT).CornerRadius=UDim.new(0,12)
-local uPTP = Instance.new("Frame"); uPTP.Size=UDim2.new(1,0,0,12); uPTP.Position=UDim2.new(0,0,1,-12)
-uPTP.BackgroundColor3=Color3.fromRGB(200,140,30); uPTP.BorderSizePixel=0; uPTP.ZIndex=301; uPTP.Parent=uPT
-
-local uPTL = Instance.new("TextLabel"); uPTL.Size=UDim2.new(1,-50,1,0); uPTL.Position=UDim2.new(0,14,0,0)
-uPTL.BackgroundTransparency=1; uPTL.Text="📰  UPD: Version 8"; uPTL.Font=Enum.Font.GothamBold
-uPTL.TextColor3=Color3.fromRGB(20,20,30); uPTL.TextSize=16; uPTL.TextXAlignment=Enum.TextXAlignment.Left
-uPTL.ZIndex=302; uPTL.Parent=uPT
-
-local uPCB = Instance.new("TextButton"); uPCB.Size=UDim2.new(0,30,0,30); uPCB.Position=UDim2.new(1,-36,0.5,-15)
-uPCB.BackgroundColor3=Color3.fromRGB(160,90,10); uPCB.Text="✕"; uPCB.Font=Enum.Font.GothamBold
-uPCB.TextColor3=Color3.new(1,1,1); uPCB.TextSize=14; uPCB.ZIndex=303; uPCB.Parent=uPT
-Instance.new("UICorner",uPCB).CornerRadius=UDim.new(0,6)
-
-local uPSc = Instance.new("ScrollingFrame"); uPSc.Size=UDim2.new(1,-20,1,-56); uPSc.Position=UDim2.new(0,10,0,48)
-uPSc.BackgroundColor3=Color3.fromRGB(12,12,18); uPSc.BackgroundTransparency=0.3; uPSc.BorderSizePixel=0
-uPSc.ScrollBarThickness=5; uPSc.ScrollBarImageColor3=Color3.fromRGB(200,150,40)
-uPSc.CanvasSize=UDim2.new(0,0,0,0); uPSc.ElasticBehavior=Enum.ElasticBehavior.Never
-uPSc.ZIndex=301; uPSc.Parent=uP; Instance.new("UICorner",uPSc).CornerRadius=UDim.new(0,8)
-
-local clE = {
-    {type="header",text="🆕  Version 8e — Unanchor System",color=Color3.fromRGB(255,200,60)},
-    {type="divider"},
-    {type="section",text="🔓  Unanchor NPCs Tab",color=Color3.fromRGB(100,200,100)},
-    {type="bullet",text="• Bring Settings now has 2 tabs: Settings + Anchored NPCs"},
-    {type="bullet",text="• Every NPC you bring gets tracked as anchored"},
-    {type="bullet",text="• Each anchored NPC shows with an 'Unanchor?' button"},
-    {type="bullet",text="• Click to restore movement: unanchors, restores WalkSpeed"},
-    {type="bullet",text="• 'Unanchor All' button to free every NPC at once"},
-    {type="bullet",text="• Auto-refreshes when opened, 🔄 button to manual refresh"},
+local clE={
+    {type="header",text="🆕  Version 8f",color=Color3.fromRGB(255,200,60)},{type="divider"},
+    {type="section",text="🔢  Duplicate NPC Numbering",color=Color3.fromRGB(0,200,200)},
+    {type="bullet",text="• NPCs with same name now show: Zombie (1), Zombie (2), etc."},
+    {type="bullet",text="• Works in Bring Filter and Anchored NPCs list"},
     {type="spacer"},
-    {type="section",text="🔒  Nuclear Bring (unchanged)",color=Color3.fromRGB(255,80,80)},
-    {type="bullet",text="• Scripts destroyed, anchored, WalkSpeed=0, 0.01s loop"},
-    {type="spacer"},
-    {type="divider"},
+    {type="section",text="🔓  Anchored NPCs in Settings",color=Color3.fromRGB(180,100,30)},
+    {type="bullet",text="• Bring Settings → ⚙ gear → Anchored NPCs section inside"},
+    {type="bullet",text="• Slider at top, anchored list below with unanchor buttons"},
+    {type="bullet",text="• Unanchor All + Refresh buttons"},
+    {type="spacer"},{type="divider"},
     {type="section",text="⌨  Hotkeys",color=Color3.fromRGB(180,180,255)},
     {type="bullet",text="• C/Insert → Show/Hide  •  X → Stop  •  V → Unview"},
-    {type="footer",text="NPCs can now be freed after bringing!",color=Color3.fromRGB(100,255,100)},
+    {type="footer",text="Cleaner layout, smarter naming!",color=Color3.fromRGB(100,255,200)},
 }
 local cy=10
 for _,e in ipairs(clE) do
@@ -339,17 +274,13 @@ end
 uPSc.CanvasSize=UDim2.new(0,0,0,cy+10)
 makeDraggable(uP, uPT)
 
-track(updB.MouseButton1Click:Connect(function()
-    uP.Visible=not uP.Visible
-    if uP.Visible then uP.Size=UDim2.new(0,420,0,0); TweenService:Create(uP,TweenInfo.new(0.3,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Size=UDim2.new(0,420,0,480)}):Play() end
-end))
-track(uPCB.MouseButton1Click:Connect(function()
-    TweenService:Create(uP,TweenInfo.new(0.2,Enum.EasingStyle.Quad,Enum.EasingDirection.In),{Size=UDim2.new(0,420,0,0)}):Play()
-    task.delay(0.2,function() uP.Visible=false; uP.Size=UDim2.new(0,420,0,480) end)
-end))
+track(updB.MouseButton1Click:Connect(function() uP.Visible=not uP.Visible
+    if uP.Visible then uP.Size=UDim2.new(0,420,0,0); TweenService:Create(uP,TweenInfo.new(0.3,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Size=UDim2.new(0,420,0,480)}):Play() end end))
+track(uPCB.MouseButton1Click:Connect(function() TweenService:Create(uP,TweenInfo.new(0.2,Enum.EasingStyle.Quad,Enum.EasingDirection.In),{Size=UDim2.new(0,420,0,0)}):Play()
+    task.delay(0.2,function() uP.Visible=false; uP.Size=UDim2.new(0,420,0,480) end) end))
 
 -- TABS
-local tabBar = Instance.new("Frame"); tabBar.Size=UDim2.new(1,-16,0,30); tabBar.Position=UDim2.new(0,8,0,42)
+local tabBar=Instance.new("Frame"); tabBar.Size=UDim2.new(1,-16,0,30); tabBar.Position=UDim2.new(0,8,0,42)
 tabBar.BackgroundTransparency=1; tabBar.ZIndex=3; tabBar.Parent=mainFrame
 local currentTab=1; local tabButtons={}; local tabFrames={}
 local tabDefs={{name="Main",color=Color3.fromRGB(0,130,180)},{name="Clickers",color=Color3.fromRGB(130,80,180)},{name="Autos",color=Color3.fromRGB(180,120,30)}}
@@ -364,14 +295,12 @@ end
 
 local function switchTab(idx) currentTab=idx
     for i,tb in ipairs(tabButtons) do tb.btn.BackgroundColor3=(i==idx) and tb.def.color or Color3.fromRGB(40,40,55) end
-    for i,tf in ipairs(tabFrames) do tf.Visible=(i==idx) end
-end
+    for i,tf in ipairs(tabFrames) do tf.Visible=(i==idx) end end
 for i,tb in ipairs(tabButtons) do track(tb.btn.MouseButton1Click:Connect(function() switchTab(i) end)) end
 
 -- TAB 1
 local t1F=Instance.new("Frame"); t1F.Size=UDim2.new(1,-16,1,-155); t1F.Position=UDim2.new(0,8,0,76)
 t1F.BackgroundTransparency=1; t1F.ZIndex=3; t1F.Visible=true; t1F.Parent=mainFrame; tabFrames[1]=t1F
-
 local s1=Instance.new("ScrollingFrame"); s1.Size=UDim2.new(1,0,1,0); s1.BackgroundTransparency=1; s1.BorderSizePixel=0
 s1.ScrollBarThickness=5; s1.ScrollBarImageColor3=Color3.fromRGB(100,100,160); s1.CanvasSize=UDim2.new(0,0,0,0)
 s1.ElasticBehavior=Enum.ElasticBehavior.Never; s1.ZIndex=3; s1.Parent=t1F
@@ -382,9 +311,9 @@ local t1D={
     {label="Delete All NPCs",color=Color3.fromRGB(178,120,20)},{label="View NPC (Click)",color=Color3.fromRGB(80,80,110)},
     {label="Kill NPC (Click)",color=Color3.fromRGB(110,40,40)},{label="Fling NPC (Click)",color=Color3.fromRGB(90,60,130)},
 }
-local C=2; local BW=195; local BH=38; local PX=10; local PY=10; local OX=5; local OY=5
+local CC=2; local BW=195; local BH=38; local PX=10; local PY=10; local OX=5; local OY=5
 local btns={}
-for i,d in ipairs(t1D) do local c=(i-1)%C; local r=math.floor((i-1)/C)
+for i,d in ipairs(t1D) do local c=(i-1)%CC; local r=math.floor((i-1)/CC)
     local b=Instance.new("TextButton"); b.Size=UDim2.new(0,BW,0,BH); b.Position=UDim2.new(0,OX+c*(BW+PX),0,OY+r*(BH+PY))
     b.BackgroundColor3=d.color; b.Text=d.label; b.Font=Enum.Font.GothamBold; b.TextColor3=Color3.new(1,1,1); b.TextSize=12; b.ZIndex=4; b.Parent=s1
     Instance.new("UICorner",b).CornerRadius=UDim.new(0,6)
@@ -392,15 +321,15 @@ for i,d in ipairs(t1D) do local c=(i-1)%C; local r=math.floor((i-1)/C)
     b.MouseLeave:Connect(function() TweenService:Create(b,TweenInfo.new(0.12),{BackgroundColor3=d.color}):Play() end)
     btns[d.label]=b
 end
-s1.CanvasSize=UDim2.new(0,0,0,OY+math.ceil(#t1D/C)*(BH+PY))
+s1.CanvasSize=UDim2.new(0,0,0,OY+math.ceil(#t1D/CC)*(BH+PY))
 
-local bG=Instance.new("TextButton"); local bc,br=(4-1)%C,math.floor((4-1)/C)
-bG.Size=UDim2.new(0,30,0,30); bG.Position=UDim2.new(0,OX+bc*(BW+PX)+BW-32,0,OY+br*(BH+PY)+4)
+local bG=Instance.new("TextButton"); local bc,br2=(4-1)%CC,math.floor((4-1)/CC)
+bG.Size=UDim2.new(0,30,0,30); bG.Position=UDim2.new(0,OX+bc*(BW+PX)+BW-32,0,OY+br2*(BH+PY)+4)
 bG.BackgroundColor3=Color3.fromRGB(0,80,80); bG.Text="⚙"; bG.Font=Enum.Font.GothamBold; bG.TextColor3=Color3.new(1,1,1)
 bG.TextSize=14; bG.ZIndex=6; bG.Parent=s1; Instance.new("UICorner",bG).CornerRadius=UDim.new(0,5)
 
-local dG=Instance.new("TextButton"); local dc2,dr2=(5-1)%C,math.floor((5-1)/C)
-dG.Size=UDim2.new(0,30,0,30); dG.Position=UDim2.new(0,OX+dc2*(BW+PX)+BW-32,0,OY+dr2*(BH+PY)+4)
+local dG=Instance.new("TextButton"); local dc3,dr3=(5-1)%CC,math.floor((5-1)/CC)
+dG.Size=UDim2.new(0,30,0,30); dG.Position=UDim2.new(0,OX+dc3*(BW+PX)+BW-32,0,OY+dr3*(BH+PY)+4)
 dG.BackgroundColor3=Color3.fromRGB(120,80,0); dG.Text="⚙"; dG.Font=Enum.Font.GothamBold; dG.TextColor3=Color3.new(1,1,1)
 dG.TextSize=14; dG.ZIndex=6; dG.Parent=s1; Instance.new("UICorner",dG).CornerRadius=UDim.new(0,5)
 
@@ -410,10 +339,9 @@ t2F.BackgroundTransparency=1; t2F.ZIndex=3; t2F.Visible=false; t2F.Parent=mainFr
 local s2=Instance.new("ScrollingFrame"); s2.Size=UDim2.new(1,0,1,0); s2.BackgroundTransparency=1; s2.BorderSizePixel=0
 s2.ScrollBarThickness=5; s2.ScrollBarImageColor3=Color3.fromRGB(130,100,180); s2.CanvasSize=UDim2.new(0,0,0,0)
 s2.ElasticBehavior=Enum.ElasticBehavior.Never; s2.ZIndex=3; s2.Parent=t2F
-
 local t2D={{label="Delete NPC (Click)",color=Color3.fromRGB(178,80,20)},{label="Bring NPC (Click)",color=Color3.fromRGB(0,120,120)},{label="Ragdoll NPC (Click)",color=Color3.fromRGB(140,60,140)}}
 local btns2={}
-for i,d in ipairs(t2D) do local c=(i-1)%C; local r=math.floor((i-1)/C)
+for i,d in ipairs(t2D) do local c=(i-1)%CC; local r=math.floor((i-1)/CC)
     local b=Instance.new("TextButton"); b.Size=UDim2.new(0,BW,0,BH); b.Position=UDim2.new(0,OX+c*(BW+PX),0,OY+r*(BH+PY))
     b.BackgroundColor3=d.color; b.Text=d.label; b.Font=Enum.Font.GothamBold; b.TextColor3=Color3.new(1,1,1); b.TextSize=12; b.ZIndex=4; b.Parent=s2
     Instance.new("UICorner",b).CornerRadius=UDim.new(0,6)
@@ -421,43 +349,30 @@ for i,d in ipairs(t2D) do local c=(i-1)%C; local r=math.floor((i-1)/C)
     b.MouseLeave:Connect(function() TweenService:Create(b,TweenInfo.new(0.12),{BackgroundColor3=d.color}):Play() end)
     btns2[d.label]=b
 end
-s2.CanvasSize=UDim2.new(0,0,0,OY+math.ceil(#t2D/C)*(BH+PY)+50)
+s2.CanvasSize=UDim2.new(0,0,0,OY+math.ceil(#t2D/CC)*(BH+PY)+50)
 
 -- TAB 3
 local t3F=Instance.new("Frame"); t3F.Size=UDim2.new(1,-16,1,-155); t3F.Position=UDim2.new(0,8,0,76)
 t3F.BackgroundTransparency=1; t3F.ZIndex=3; t3F.Visible=false; t3F.Parent=mainFrame; tabFrames[3]=t3F
-
-local t3H=Instance.new("TextLabel"); t3H.Size=UDim2.new(1,0,0,22); t3H.BackgroundTransparency=1
-t3H.Text="🔄  Auto / Loop Modes  —  scroll ◄ ►"; t3H.Font=Enum.Font.GothamBold
-t3H.TextColor3=Color3.fromRGB(220,180,80); t3H.TextSize=12; t3H.TextXAlignment=Enum.TextXAlignment.Left; t3H.ZIndex=4; t3H.Parent=t3F
-
+local t3H=Instance.new("TextLabel"); t3H.Size=UDim2.new(1,0,0,22); t3H.BackgroundTransparency=1; t3H.Text="🔄  Auto / Loop Modes  —  scroll ◄ ►"
+t3H.Font=Enum.Font.GothamBold; t3H.TextColor3=Color3.fromRGB(220,180,80); t3H.TextSize=12; t3H.TextXAlignment=Enum.TextXAlignment.Left; t3H.ZIndex=4; t3H.Parent=t3F
 local s3=Instance.new("ScrollingFrame"); s3.Size=UDim2.new(1,0,1,-28); s3.Position=UDim2.new(0,0,0,26)
 s3.BackgroundTransparency=1; s3.BorderSizePixel=0; s3.ScrollBarThickness=5; s3.ScrollBarImageColor3=Color3.fromRGB(180,140,50)
-s3.CanvasSize=UDim2.new(0,0,0,0); s3.ElasticBehavior=Enum.ElasticBehavior.Never; s3.ScrollingDirection=Enum.ScrollingDirection.X
-s3.ZIndex=3; s3.Parent=t3F
+s3.CanvasSize=UDim2.new(0,0,0,0); s3.ElasticBehavior=Enum.ElasticBehavior.Never; s3.ScrollingDirection=Enum.ScrollingDirection.X; s3.ZIndex=3; s3.Parent=t3F
 
 local h3=false; s3.MouseEnter:Connect(function() h3=true end); s3.MouseLeave:Connect(function() h3=false end)
 track(UserInputService.InputChanged:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseWheel and h3 then
-    local sa=-i.Position.Z*60; local np=math.clamp(s3.CanvasPosition.X+sa,0,math.max(0,s3.CanvasSize.X.Offset-s3.AbsoluteSize.X))
-    s3.CanvasPosition=Vector2.new(np,0) end end))
+    local sa=-i.Position.Z*60; s3.CanvasPosition=Vector2.new(math.clamp(s3.CanvasPosition.X+sa,0,math.max(0,s3.CanvasSize.X.Offset-s3.AbsoluteSize.X)),0) end end))
 
 local t3D={{label="Auto Fling NPCs",color=Color3.fromRGB(160,90,220)},{label="Bring All NPCs (Loop)",color=Color3.fromRGB(0,139,139)},{label="Ragdoll All NPCs (Loop)",color=Color3.fromRGB(140,60,140)}}
 local CWd=170; local CHd=120; local CPd=12; local CYd=10; local btns3={}
-
 for i,d in ipairs(t3D) do
     local cd=Instance.new("Frame"); cd.Size=UDim2.new(0,CWd,0,CHd); cd.Position=UDim2.new(0,10+(i-1)*(CWd+CPd),0,CYd)
-    cd.BackgroundColor3=Color3.fromRGB(30,30,44); cd.BorderSizePixel=0; cd.ZIndex=4; cd.Parent=s3
-    Instance.new("UICorner",cd).CornerRadius=UDim.new(0,8)
-    local ac=Instance.new("Frame"); ac.Size=UDim2.new(1,0,0,4); ac.BackgroundColor3=d.color; ac.BorderSizePixel=0; ac.ZIndex=5; ac.Parent=cd
-    Instance.new("UICorner",ac).CornerRadius=UDim.new(0,2)
-    local lb=Instance.new("TextLabel"); lb.Size=UDim2.new(1,-12,0,40); lb.Position=UDim2.new(0,6,0,12); lb.BackgroundTransparency=1
-    lb.Text=d.label; lb.Font=Enum.Font.GothamBold; lb.TextColor3=Color3.fromRGB(220,220,240); lb.TextSize=11; lb.TextWrapped=true
-    lb.TextXAlignment=Enum.TextXAlignment.Center; lb.ZIndex=5; lb.Parent=cd
-    local dt=Instance.new("Frame"); dt.Size=UDim2.new(0,10,0,10); dt.Position=UDim2.new(0.5,-5,0,55)
-    dt.BackgroundColor3=Color3.fromRGB(80,80,80); dt.ZIndex=5; dt.Parent=cd; Instance.new("UICorner",dt).CornerRadius=UDim.new(1,0)
-    local tg=Instance.new("TextButton"); tg.Size=UDim2.new(1,-20,0,30); tg.Position=UDim2.new(0,10,1,-40)
-    tg.BackgroundColor3=d.color; tg.Text="OFF"; tg.Font=Enum.Font.GothamBold; tg.TextColor3=Color3.new(1,1,1); tg.TextSize=12; tg.ZIndex=6; tg.Parent=cd
-    Instance.new("UICorner",tg).CornerRadius=UDim.new(0,6)
+    cd.BackgroundColor3=Color3.fromRGB(30,30,44); cd.BorderSizePixel=0; cd.ZIndex=4; cd.Parent=s3; Instance.new("UICorner",cd).CornerRadius=UDim.new(0,8)
+    local ac=Instance.new("Frame"); ac.Size=UDim2.new(1,0,0,4); ac.BackgroundColor3=d.color; ac.BorderSizePixel=0; ac.ZIndex=5; ac.Parent=cd; Instance.new("UICorner",ac).CornerRadius=UDim.new(0,2)
+    local lb=Instance.new("TextLabel"); lb.Size=UDim2.new(1,-12,0,40); lb.Position=UDim2.new(0,6,0,12); lb.BackgroundTransparency=1; lb.Text=d.label; lb.Font=Enum.Font.GothamBold; lb.TextColor3=Color3.fromRGB(220,220,240); lb.TextSize=11; lb.TextWrapped=true; lb.TextXAlignment=Enum.TextXAlignment.Center; lb.ZIndex=5; lb.Parent=cd
+    local dt=Instance.new("Frame"); dt.Size=UDim2.new(0,10,0,10); dt.Position=UDim2.new(0.5,-5,0,55); dt.BackgroundColor3=Color3.fromRGB(80,80,80); dt.ZIndex=5; dt.Parent=cd; Instance.new("UICorner",dt).CornerRadius=UDim.new(1,0)
+    local tg=Instance.new("TextButton"); tg.Size=UDim2.new(1,-20,0,30); tg.Position=UDim2.new(0,10,1,-40); tg.BackgroundColor3=d.color; tg.Text="OFF"; tg.Font=Enum.Font.GothamBold; tg.TextColor3=Color3.new(1,1,1); tg.TextSize=12; tg.ZIndex=6; tg.Parent=cd; Instance.new("UICorner",tg).CornerRadius=UDim.new(0,6)
     tg.MouseEnter:Connect(function() TweenService:Create(tg,TweenInfo.new(0.12),{BackgroundColor3=d.color:Lerp(Color3.new(1,1,1),0.15)}):Play() end)
     tg.MouseLeave:Connect(function() TweenService:Create(tg,TweenInfo.new(0.12),{BackgroundColor3=d.color}):Play() end)
     btns3[d.label]={btn=tg,dot=dt,card=cd}
@@ -466,49 +381,29 @@ s3.CanvasSize=UDim2.new(0,10+#t3D*(CWd+CPd),0,0)
 
 -- UNVIEW
 local uvB=Instance.new("TextButton"); uvB.Size=UDim2.new(0,160,0,36); uvB.Position=UDim2.new(0.5,-80,0,8)
-uvB.BackgroundColor3=Color3.fromRGB(200,50,50); uvB.Text="👁 Unview NPC"; uvB.Font=Enum.Font.GothamBold
-uvB.TextColor3=Color3.new(1,1,1); uvB.TextSize=14; uvB.ZIndex=200; uvB.Visible=false; uvB.Parent=gui
-Instance.new("UICorner",uvB).CornerRadius=UDim.new(0,8)
-task.spawn(function() while gui.Parent do if uvB.Visible then
-    TweenService:Create(uvB,TweenInfo.new(0.6,Enum.EasingStyle.Sine),{BackgroundColor3=Color3.fromRGB(255,70,70)}):Play(); task.wait(0.6)
-    if uvB.Visible then TweenService:Create(uvB,TweenInfo.new(0.6,Enum.EasingStyle.Sine),{BackgroundColor3=Color3.fromRGB(180,30,30)}):Play(); task.wait(0.6) end
-else task.wait(0.3) end end end)
+uvB.BackgroundColor3=Color3.fromRGB(200,50,50); uvB.Text="👁 Unview NPC"; uvB.Font=Enum.Font.GothamBold; uvB.TextColor3=Color3.new(1,1,1); uvB.TextSize=14; uvB.ZIndex=200; uvB.Visible=false; uvB.Parent=gui; Instance.new("UICorner",uvB).CornerRadius=UDim.new(0,8)
+task.spawn(function() while gui.Parent do if uvB.Visible then TweenService:Create(uvB,TweenInfo.new(0.6,Enum.EasingStyle.Sine),{BackgroundColor3=Color3.fromRGB(255,70,70)}):Play(); task.wait(0.6)
+    if uvB.Visible then TweenService:Create(uvB,TweenInfo.new(0.6,Enum.EasingStyle.Sine),{BackgroundColor3=Color3.fromRGB(180,30,30)}):Play(); task.wait(0.6) end else task.wait(0.3) end end end)
 local function showUV() uvB.Visible=true end; local function hideUV() uvB.Visible=false end
 local function doUnview() resetCamera(); hideUV(); states.viewNPC=false; btns["View NPC (Click)"].Text="View NPC (Click)" end
 track(uvB.MouseButton1Click:Connect(doUnview))
 
 -- BOTTOM
-local stB=Instance.new("TextButton"); stB.Size=UDim2.new(1,-16,0,32); stB.Position=UDim2.new(0,8,1,-72)
-stB.BackgroundColor3=Color3.fromRGB(160,30,30); stB.Text="🛑  Stop All  [X]"; stB.Font=Enum.Font.GothamBold
-stB.TextColor3=Color3.new(1,1,1); stB.TextSize=13; stB.ZIndex=5; stB.Parent=mainFrame; Instance.new("UICorner",stB).CornerRadius=UDim.new(0,7)
-
-local anB=Instance.new("TextButton"); anB.Size=UDim2.new(1,-16,0,28); anB.Position=UDim2.new(0,8,1,-36)
-anB.BackgroundColor3=Color3.fromRGB(80,40,40); anB.Text="Anchor Toggle: OFF"; anB.Font=Enum.Font.GothamBold
-anB.TextColor3=Color3.new(1,1,1); anB.TextSize=12; anB.ZIndex=5; anB.Parent=mainFrame; Instance.new("UICorner",anB).CornerRadius=UDim.new(0,7)
+local stB=Instance.new("TextButton"); stB.Size=UDim2.new(1,-16,0,32); stB.Position=UDim2.new(0,8,1,-72); stB.BackgroundColor3=Color3.fromRGB(160,30,30); stB.Text="🛑  Stop All  [X]"; stB.Font=Enum.Font.GothamBold; stB.TextColor3=Color3.new(1,1,1); stB.TextSize=13; stB.ZIndex=5; stB.Parent=mainFrame; Instance.new("UICorner",stB).CornerRadius=UDim.new(0,7)
+local anB=Instance.new("TextButton"); anB.Size=UDim2.new(1,-16,0,28); anB.Position=UDim2.new(0,8,1,-36); anB.BackgroundColor3=Color3.fromRGB(80,40,40); anB.Text="Anchor Toggle: OFF"; anB.Font=Enum.Font.GothamBold; anB.TextColor3=Color3.new(1,1,1); anB.TextSize=12; anB.ZIndex=5; anB.Parent=mainFrame; Instance.new("UICorner",anB).CornerRadius=UDim.new(0,7)
 
 -- SETTINGS PANEL
-local sP=Instance.new("Frame"); sP.Size=UDim2.new(0,360,0,310); sP.Position=UDim2.new(0.5,-180,0.35,0)
-sP.BackgroundColor3=Color3.fromRGB(18,18,26); sP.Visible=false; sP.ZIndex=50; sP.Parent=gui
-Instance.new("UICorner",sP).CornerRadius=UDim.new(0,10)
-local sPT=Instance.new("Frame"); sPT.Size=UDim2.new(1,0,0,34); sPT.BackgroundColor3=Color3.fromRGB(30,30,46)
-sPT.BorderSizePixel=0; sPT.ZIndex=51; sPT.Parent=sP; Instance.new("UICorner",sPT).CornerRadius=UDim.new(0,10)
-local sPTP=Instance.new("Frame"); sPTP.Size=UDim2.new(1,0,0,10); sPTP.Position=UDim2.new(0,0,1,-10)
-sPTP.BackgroundColor3=Color3.fromRGB(30,30,46); sPTP.BorderSizePixel=0; sPTP.ZIndex=51; sPTP.Parent=sPT
-local sPTL=Instance.new("TextLabel"); sPTL.Size=UDim2.new(1,-40,1,0); sPTL.Position=UDim2.new(0,10,0,0)
-sPTL.BackgroundTransparency=1; sPTL.Text="⚙  Settings"; sPTL.Font=Enum.Font.GothamBold
-sPTL.TextColor3=Color3.fromRGB(210,210,255); sPTL.TextSize=13; sPTL.TextXAlignment=Enum.TextXAlignment.Left; sPTL.ZIndex=52; sPTL.Parent=sPT
-local sPCB=Instance.new("TextButton"); sPCB.Size=UDim2.new(0,26,0,26); sPCB.Position=UDim2.new(1,-30,0.5,-13)
-sPCB.BackgroundColor3=Color3.fromRGB(160,30,30); sPCB.Text="✕"; sPCB.Font=Enum.Font.GothamBold
-sPCB.TextColor3=Color3.new(1,1,1); sPCB.TextSize=13; sPCB.ZIndex=52; sPCB.Parent=sPT; Instance.new("UICorner",sPCB).CornerRadius=UDim.new(0,5)
+local sP=Instance.new("Frame"); sP.Size=UDim2.new(0,360,0,310); sP.Position=UDim2.new(0.5,-180,0.35,0); sP.BackgroundColor3=Color3.fromRGB(18,18,26); sP.Visible=false; sP.ZIndex=50; sP.Parent=gui; Instance.new("UICorner",sP).CornerRadius=UDim.new(0,10)
+local sPT=Instance.new("Frame"); sPT.Size=UDim2.new(1,0,0,34); sPT.BackgroundColor3=Color3.fromRGB(30,30,46); sPT.BorderSizePixel=0; sPT.ZIndex=51; sPT.Parent=sP; Instance.new("UICorner",sPT).CornerRadius=UDim.new(0,10)
+local sPTP=Instance.new("Frame"); sPTP.Size=UDim2.new(1,0,0,10); sPTP.Position=UDim2.new(0,0,1,-10); sPTP.BackgroundColor3=Color3.fromRGB(30,30,46); sPTP.BorderSizePixel=0; sPTP.ZIndex=51; sPTP.Parent=sPT
+local sPTL=Instance.new("TextLabel"); sPTL.Size=UDim2.new(1,-40,1,0); sPTL.Position=UDim2.new(0,10,0,0); sPTL.BackgroundTransparency=1; sPTL.Text="⚙  Settings"; sPTL.Font=Enum.Font.GothamBold; sPTL.TextColor3=Color3.fromRGB(210,210,255); sPTL.TextSize=13; sPTL.TextXAlignment=Enum.TextXAlignment.Left; sPTL.ZIndex=52; sPTL.Parent=sPT
+local sPCB=Instance.new("TextButton"); sPCB.Size=UDim2.new(0,26,0,26); sPCB.Position=UDim2.new(1,-30,0.5,-13); sPCB.BackgroundColor3=Color3.fromRGB(160,30,30); sPCB.Text="✕"; sPCB.Font=Enum.Font.GothamBold; sPCB.TextColor3=Color3.new(1,1,1); sPCB.TextSize=13; sPCB.ZIndex=52; sPCB.Parent=sPT; Instance.new("UICorner",sPCB).CornerRadius=UDim.new(0,5)
 makeDraggable(sP,sPT)
 
 local function makeSlider(cfg)
-    local cn=Instance.new("Frame"); cn.Size=UDim2.new(1,-20,0,58); cn.Position=UDim2.new(0,10,0,cfg.yOffset)
-    cn.BackgroundTransparency=1; cn.ZIndex=60; cn.Parent=cfg.parent
-    local lb=Instance.new("TextLabel"); lb.Size=UDim2.new(1,0,0,22); lb.BackgroundTransparency=1; lb.Font=Enum.Font.Gotham
-    lb.TextColor3=Color3.fromRGB(200,200,230); lb.TextSize=12; lb.TextXAlignment=Enum.TextXAlignment.Left; lb.ZIndex=61; lb.Parent=cn
-    local tb=Instance.new("Frame"); tb.Size=UDim2.new(1,-20,0,8); tb.Position=UDim2.new(0,10,0,32)
-    tb.BackgroundColor3=Color3.fromRGB(55,55,75); tb.BorderSizePixel=0; tb.ZIndex=61; tb.Parent=cn; Instance.new("UICorner",tb).CornerRadius=UDim.new(1,0)
+    local cn=Instance.new("Frame"); cn.Size=UDim2.new(1,-20,0,58); cn.Position=UDim2.new(0,10,0,cfg.yOffset); cn.BackgroundTransparency=1; cn.ZIndex=60; cn.Parent=cfg.parent
+    local lb=Instance.new("TextLabel"); lb.Size=UDim2.new(1,0,0,22); lb.BackgroundTransparency=1; lb.Font=Enum.Font.Gotham; lb.TextColor3=Color3.fromRGB(200,200,230); lb.TextSize=12; lb.TextXAlignment=Enum.TextXAlignment.Left; lb.ZIndex=61; lb.Parent=cn
+    local tb=Instance.new("Frame"); tb.Size=UDim2.new(1,-20,0,8); tb.Position=UDim2.new(0,10,0,32); tb.BackgroundColor3=Color3.fromRGB(55,55,75); tb.BorderSizePixel=0; tb.ZIndex=61; tb.Parent=cn; Instance.new("UICorner",tb).CornerRadius=UDim.new(1,0)
     local fl=Instance.new("Frame"); fl.Size=UDim2.new(0,0,1,0); fl.BackgroundColor3=Color3.fromRGB(0,160,255); fl.BorderSizePixel=0; fl.ZIndex=62; fl.Parent=tb; Instance.new("UICorner",fl).CornerRadius=UDim.new(1,0)
     local kn=Instance.new("Frame"); kn.Size=UDim2.new(0,18,0,18); kn.AnchorPoint=Vector2.new(0.5,0.5); kn.BackgroundColor3=Color3.fromRGB(0,200,255); kn.BorderSizePixel=0; kn.ZIndex=63; kn.Parent=tb; Instance.new("UICorner",kn).CornerRadius=UDim.new(1,0)
     local function ap(p) p=math.clamp(p,0,1); local v=math.floor(cfg.min+p*(cfg.max-cfg.min)); fl.Size=UDim2.new(p,0,1,0); kn.Position=UDim2.new(p,0,0.5,0); lb.Text=cfg.label.."  —  "..v; cfg.onChange(v) end
@@ -526,219 +421,137 @@ makeSlider({parent=sP,yOffset=112,label="Fling Strength",min=1,max=2000,default=
 makeSlider({parent=sP,yOffset=182,label="Push Range",min=1,max=500,default=15,onChange=function(v) pushRange=v end})
 
 -- ============================================================
---  BRING SETTINGS PANEL WITH 2 TABS
+--  BRING SETTINGS PANEL (single panel, slider + anchored list)
 -- ============================================================
-local bSP=Instance.new("Frame"); bSP.Size=UDim2.new(0,380,0,360); bSP.Position=UDim2.new(0.5,-190,0.2,0)
+local bSP=Instance.new("Frame"); bSP.Size=UDim2.new(0,380,0,440); bSP.Position=UDim2.new(0.5,-190,0.15,0)
 bSP.BackgroundColor3=Color3.fromRGB(18,18,26); bSP.Visible=false; bSP.ZIndex=90; bSP.Parent=gui
 Instance.new("UICorner",bSP).CornerRadius=UDim.new(0,10)
 
-local bST=Instance.new("Frame"); bST.Size=UDim2.new(1,0,0,34); bST.BackgroundColor3=Color3.fromRGB(0,100,100)
-bST.BorderSizePixel=0; bST.ZIndex=91; bST.Parent=bSP; Instance.new("UICorner",bST).CornerRadius=UDim.new(0,10)
-local bSTP=Instance.new("Frame"); bSTP.Size=UDim2.new(1,0,0,10); bSTP.Position=UDim2.new(0,0,1,-10)
-bSTP.BackgroundColor3=Color3.fromRGB(0,100,100); bSTP.BorderSizePixel=0; bSTP.ZIndex=91; bSTP.Parent=bST
+local bSTopBar=Instance.new("Frame"); bSTopBar.Size=UDim2.new(1,0,0,34); bSTopBar.BackgroundColor3=Color3.fromRGB(0,100,100)
+bSTopBar.BorderSizePixel=0; bSTopBar.ZIndex=91; bSTopBar.Parent=bSP; Instance.new("UICorner",bSTopBar).CornerRadius=UDim.new(0,10)
+local bSTbP=Instance.new("Frame"); bSTbP.Size=UDim2.new(1,0,0,10); bSTbP.Position=UDim2.new(0,0,1,-10)
+bSTbP.BackgroundColor3=Color3.fromRGB(0,100,100); bSTbP.BorderSizePixel=0; bSTbP.ZIndex=91; bSTbP.Parent=bSTopBar
 
 local bSTL=Instance.new("TextLabel"); bSTL.Size=UDim2.new(1,-40,1,0); bSTL.Position=UDim2.new(0,10,0,0)
 bSTL.BackgroundTransparency=1; bSTL.Text="📋 Bring Settings"; bSTL.Font=Enum.Font.GothamBold
-bSTL.TextColor3=Color3.new(1,1,1); bSTL.TextSize=13; bSTL.TextXAlignment=Enum.TextXAlignment.Left; bSTL.ZIndex=92; bSTL.Parent=bST
+bSTL.TextColor3=Color3.new(1,1,1); bSTL.TextSize=13; bSTL.TextXAlignment=Enum.TextXAlignment.Left; bSTL.ZIndex=92; bSTL.Parent=bSTopBar
 
-local bSCB=Instance.new("TextButton"); bSCB.Size=UDim2.new(0,26,0,26); bSCB.Position=UDim2.new(1,-30,0.5,-13)
-bSCB.BackgroundColor3=Color3.fromRGB(160,30,30); bSCB.Text="✕"; bSCB.Font=Enum.Font.GothamBold
-bSCB.TextColor3=Color3.new(1,1,1); bSCB.TextSize=13; bSCB.ZIndex=93; bSCB.Parent=bST
-Instance.new("UICorner",bSCB).CornerRadius=UDim.new(0,5)
-makeDraggable(bSP,bST)
-track(bSCB.MouseButton1Click:Connect(function() bSP.Visible=false end))
+local bSCloseB=Instance.new("TextButton"); bSCloseB.Size=UDim2.new(0,26,0,26); bSCloseB.Position=UDim2.new(1,-30,0.5,-13)
+bSCloseB.BackgroundColor3=Color3.fromRGB(160,30,30); bSCloseB.Text="✕"; bSCloseB.Font=Enum.Font.GothamBold
+bSCloseB.TextColor3=Color3.new(1,1,1); bSCloseB.TextSize=13; bSCloseB.ZIndex=93; bSCloseB.Parent=bSTopBar
+Instance.new("UICorner",bSCloseB).CornerRadius=UDim.new(0,5)
+makeDraggable(bSP,bSTopBar)
+track(bSCloseB.MouseButton1Click:Connect(function() bSP.Visible=false end))
 
--- Bring Settings Tabs
-local bsTabBar=Instance.new("Frame"); bsTabBar.Size=UDim2.new(1,-16,0,28); bsTabBar.Position=UDim2.new(0,8,0,38)
-bsTabBar.BackgroundTransparency=1; bsTabBar.ZIndex=91; bsTabBar.Parent=bSP
+-- Scrollable content inside bring settings
+local bSScroll=Instance.new("ScrollingFrame"); bSScroll.Size=UDim2.new(1,-16,1,-42); bSScroll.Position=UDim2.new(0,8,0,38)
+bSScroll.BackgroundTransparency=1; bSScroll.BorderSizePixel=0; bSScroll.ScrollBarThickness=5
+bSScroll.ScrollBarImageColor3=Color3.fromRGB(0,140,140); bSScroll.CanvasSize=UDim2.new(0,0,0,0)
+bSScroll.ElasticBehavior=Enum.ElasticBehavior.Never; bSScroll.ZIndex=91; bSScroll.Parent=bSP
 
-local bsCurrentTab=1
-local bsTabBtns={}
-local bsTabFrames={}
-local bsTabDefs={{name="⚙ Settings",color=Color3.fromRGB(0,120,120)},{name="🔓 Anchored NPCs",color=Color3.fromRGB(180,100,30)}}
+-- Attempts slider
+makeSlider({parent=bSScroll,yOffset=5,label="Bring Attempts Per NPC",min=1,max=25,default=5,onChange=function(v) bringAttempts=v end})
 
-for i,td in ipairs(bsTabDefs) do
-    local tw=math.floor((380-16-6)/2)
-    local tb=Instance.new("TextButton"); tb.Size=UDim2.new(0,tw,0,26); tb.Position=UDim2.new(0,(i-1)*(tw+6),0,0)
-    tb.BackgroundColor3=i==1 and td.color or Color3.fromRGB(40,40,55); tb.Text=td.name; tb.Font=Enum.Font.GothamBold
-    tb.TextColor3=Color3.new(1,1,1); tb.TextSize=11; tb.ZIndex=92; tb.Parent=bsTabBar
-    Instance.new("UICorner",tb).CornerRadius=UDim.new(0,5); bsTabBtns[i]={btn=tb,def=td}
-end
+-- Info text
+local bSInfo=Instance.new("TextLabel"); bSInfo.Size=UDim2.new(1,-10,0,36); bSInfo.Position=UDim2.new(0,5,0,70)
+bSInfo.BackgroundTransparency=1; bSInfo.Text="NPCs are anchored after bringing. Scripts destroyed,\nmovement frozen. Unanchor them below."
+bSInfo.Font=Enum.Font.Gotham; bSInfo.TextColor3=Color3.fromRGB(130,130,160); bSInfo.TextSize=10
+bSInfo.TextWrapped=true; bSInfo.ZIndex=92; bSInfo.Parent=bSScroll
 
-local function switchBSTab(idx) bsCurrentTab=idx
-    for i,tb in ipairs(bsTabBtns) do tb.btn.BackgroundColor3=(i==idx) and tb.def.color or Color3.fromRGB(40,40,55) end
-    for i,tf in ipairs(bsTabFrames) do tf.Visible=(i==idx) end
-end
+-- Divider
+local bSDivider=Instance.new("Frame"); bSDivider.Size=UDim2.new(1,-20,0,1); bSDivider.Position=UDim2.new(0,10,0,112)
+bSDivider.BackgroundColor3=Color3.fromRGB(60,60,80); bSDivider.BorderSizePixel=0; bSDivider.ZIndex=92; bSDivider.Parent=bSScroll
 
-for i,tb in ipairs(bsTabBtns) do
-    track(tb.btn.MouseButton1Click:Connect(function() switchBSTab(i) end))
-end
-
--- BS Tab 1: Settings (slider)
-local bsT1=Instance.new("Frame"); bsT1.Size=UDim2.new(1,-16,1,-78); bsT1.Position=UDim2.new(0,8,0,70)
-bsT1.BackgroundTransparency=1; bsT1.ZIndex=91; bsT1.Visible=true; bsT1.Parent=bSP; bsTabFrames[1]=bsT1
-
-makeSlider({parent=bsT1,yOffset=10,label="Bring Attempts Per NPC",min=1,max=25,default=5,onChange=function(v) bringAttempts=v end})
-
-local bsI1=Instance.new("TextLabel"); bsI1.Size=UDim2.new(1,-10,0,60); bsI1.Position=UDim2.new(0,5,0,80)
-bsI1.BackgroundTransparency=1; bsI1.Text="Each NPC is retried individually until locked.\nScripts destroyed, movement frozen, HRP anchored.\nNPCs appear in 'Anchored NPCs' tab for unanchoring."
-bsI1.Font=Enum.Font.Gotham; bsI1.TextColor3=Color3.fromRGB(140,140,170); bsI1.TextSize=11; bsI1.TextWrapped=true; bsI1.ZIndex=92; bsI1.Parent=bsT1
-
--- BS Tab 2: Anchored NPCs list
-local bsT2=Instance.new("Frame"); bsT2.Size=UDim2.new(1,-16,1,-78); bsT2.Position=UDim2.new(0,8,0,70)
-bsT2.BackgroundTransparency=1; bsT2.ZIndex=91; bsT2.Visible=false; bsT2.Parent=bSP; bsTabFrames[2]=bsT2
+-- Anchored NPCs header
+local bSAncHeader=Instance.new("TextLabel"); bSAncHeader.Size=UDim2.new(1,-10,0,22); bSAncHeader.Position=UDim2.new(0,5,0,120)
+bSAncHeader.BackgroundTransparency=1; bSAncHeader.Text="🔒 Anchored NPCs"; bSAncHeader.Font=Enum.Font.GothamBold
+bSAncHeader.TextColor3=Color3.fromRGB(255,180,60); bSAncHeader.TextSize=13; bSAncHeader.TextXAlignment=Enum.TextXAlignment.Left
+bSAncHeader.ZIndex=92; bSAncHeader.Parent=bSScroll
 
 -- Controls row
-local bsT2Ctrl=Instance.new("Frame"); bsT2Ctrl.Size=UDim2.new(1,0,0,30); bsT2Ctrl.BackgroundTransparency=1; bsT2Ctrl.ZIndex=91; bsT2Ctrl.Parent=bsT2
+local bSCtrlRow=Instance.new("Frame"); bSCtrlRow.Size=UDim2.new(1,-10,0,28); bSCtrlRow.Position=UDim2.new(0,5,0,145)
+bSCtrlRow.BackgroundTransparency=1; bSCtrlRow.ZIndex=91; bSCtrlRow.Parent=bSScroll
 
-local bsUnAll=Instance.new("TextButton"); bsUnAll.Size=UDim2.new(0,110,0,26); bsUnAll.Position=UDim2.new(0,0,0,2)
-bsUnAll.BackgroundColor3=Color3.fromRGB(180,100,30); bsUnAll.Text="🔓 Unanchor All"; bsUnAll.Font=Enum.Font.GothamBold
-bsUnAll.TextColor3=Color3.new(1,1,1); bsUnAll.TextSize=11; bsUnAll.ZIndex=92; bsUnAll.Parent=bsT2Ctrl
-Instance.new("UICorner",bsUnAll).CornerRadius=UDim.new(0,5)
+local bSUnAllBtn=Instance.new("TextButton"); bSUnAllBtn.Size=UDim2.new(0,110,0,24); bSUnAllBtn.Position=UDim2.new(0,0,0,2)
+bSUnAllBtn.BackgroundColor3=Color3.fromRGB(180,100,30); bSUnAllBtn.Text="🔓 Unanchor All"; bSUnAllBtn.Font=Enum.Font.GothamBold
+bSUnAllBtn.TextColor3=Color3.new(1,1,1); bSUnAllBtn.TextSize=10; bSUnAllBtn.ZIndex=92; bSUnAllBtn.Parent=bSCtrlRow
+Instance.new("UICorner",bSUnAllBtn).CornerRadius=UDim.new(0,5)
 
-local bsRefr=Instance.new("TextButton"); bsRefr.Size=UDim2.new(0,26,0,26); bsRefr.Position=UDim2.new(0,116,0,2)
-bsRefr.BackgroundColor3=Color3.fromRGB(60,100,100); bsRefr.Text="🔄"; bsRefr.Font=Enum.Font.GothamBold
-bsRefr.TextColor3=Color3.new(1,1,1); bsRefr.TextSize=12; bsRefr.ZIndex=92; bsRefr.Parent=bsT2Ctrl
-Instance.new("UICorner",bsRefr).CornerRadius=UDim.new(0,5)
+local bSRefrBtn=Instance.new("TextButton"); bSRefrBtn.Size=UDim2.new(0,24,0,24); bSRefrBtn.Position=UDim2.new(0,116,0,2)
+bSRefrBtn.BackgroundColor3=Color3.fromRGB(60,100,100); bSRefrBtn.Text="🔄"; bSRefrBtn.Font=Enum.Font.GothamBold
+bSRefrBtn.TextColor3=Color3.new(1,1,1); bSRefrBtn.TextSize=11; bSRefrBtn.ZIndex=92; bSRefrBtn.Parent=bSCtrlRow
+Instance.new("UICorner",bSRefrBtn).CornerRadius=UDim.new(0,5)
 
-local bsCount=Instance.new("TextLabel"); bsCount.Size=UDim2.new(0,140,0,26); bsCount.Position=UDim2.new(1,-140,0,2)
-bsCount.BackgroundTransparency=1; bsCount.Text="Anchored: 0"; bsCount.Font=Enum.Font.Gotham
-bsCount.TextColor3=Color3.fromRGB(180,180,200); bsCount.TextSize=11; bsCount.TextXAlignment=Enum.TextXAlignment.Right
-bsCount.ZIndex=92; bsCount.Parent=bsT2Ctrl
+local bSCountLbl=Instance.new("TextLabel"); bSCountLbl.Size=UDim2.new(0,120,0,24); bSCountLbl.Position=UDim2.new(1,-120,0,2)
+bSCountLbl.BackgroundTransparency=1; bSCountLbl.Text="Anchored: 0"; bSCountLbl.Font=Enum.Font.Gotham
+bSCountLbl.TextColor3=Color3.fromRGB(180,180,200); bSCountLbl.TextSize=11; bSCountLbl.TextXAlignment=Enum.TextXAlignment.Right
+bSCountLbl.ZIndex=92; bSCountLbl.Parent=bSCtrlRow
 
--- Scroll for anchored NPCs
-local bsT2Sc=Instance.new("ScrollingFrame"); bsT2Sc.Size=UDim2.new(1,0,1,-36); bsT2Sc.Position=UDim2.new(0,0,0,34)
-bsT2Sc.BackgroundColor3=Color3.fromRGB(14,14,20); bsT2Sc.BackgroundTransparency=0.3; bsT2Sc.BorderSizePixel=0
-bsT2Sc.ScrollBarThickness=5; bsT2Sc.ScrollBarImageColor3=Color3.fromRGB(180,120,40)
-bsT2Sc.CanvasSize=UDim2.new(0,0,0,0); bsT2Sc.ElasticBehavior=Enum.ElasticBehavior.Never
-bsT2Sc.ZIndex=91; bsT2Sc.Parent=bsT2; Instance.new("UICorner",bsT2Sc).CornerRadius=UDim.new(0,6)
+-- Anchored NPC list start Y
+local ANCHOR_LIST_Y = 178
+local anchoredRowObjs = {}
 
--- No anchored NPCs label
-local bsNoNPCs=Instance.new("TextLabel"); bsNoNPCs.Size=UDim2.new(1,-20,0,60); bsNoNPCs.Position=UDim2.new(0,10,0.5,-30)
-bsNoNPCs.BackgroundTransparency=1; bsNoNPCs.Text="No anchored NPCs yet.\nBring NPCs to anchor them, then\ncome here to unanchor."
-bsNoNPCs.Font=Enum.Font.Gotham; bsNoNPCs.TextColor3=Color3.fromRGB(100,100,130); bsNoNPCs.TextSize=12
-bsNoNPCs.TextWrapped=true; bsNoNPCs.ZIndex=92; bsNoNPCs.Parent=bsT2Sc
+local bSNoNPCs=Instance.new("TextLabel"); bSNoNPCs.Size=UDim2.new(1,-20,0,50); bSNoNPCs.Position=UDim2.new(0,10,0,ANCHOR_LIST_Y)
+bSNoNPCs.BackgroundTransparency=1; bSNoNPCs.Text="No anchored NPCs.\nBring NPCs to lock them here."
+bSNoNPCs.Font=Enum.Font.Gotham; bSNoNPCs.TextColor3=Color3.fromRGB(90,90,120); bSNoNPCs.TextSize=11
+bSNoNPCs.TextWrapped=true; bSNoNPCs.ZIndex=92; bSNoNPCs.Parent=bSScroll
 
-local anchoredRows = {}
-
-local function refreshAnchoredList()
-    -- Clear existing rows
-    for _, row in ipairs(anchoredRows) do
-        if row and row.Parent then row:Destroy() end
-    end
-    anchoredRows = {}
-
-    -- Clean up dead entries
+refreshAnchoredList = function()
+    for _, row in ipairs(anchoredRowObjs) do if row and row.Parent then row:Destroy() end end
+    anchoredRowObjs = {}
+    -- Clean dead
     local cleaned = {}
-    for key, data in pairs(anchoredNPCs) do
-        local exists = pcall(function() local _ = data.hrp.Position end)
-        if exists and data.model.Parent then
-            cleaned[key] = data
-        end
+    for uid, data in pairs(anchoredNPCs) do
+        local ex = pcall(function() local _ = data.hrp.Position end)
+        if ex and data.model.Parent then cleaned[uid] = data end
     end
     anchoredNPCs = cleaned
 
-    local count = 0
-    local idx = 0
-    for key, data in pairs(anchoredNPCs) do
-        count = count + 1
-        idx = idx + 1
+    local count = 0; local idx = 0
+    for uid, data in pairs(anchoredNPCs) do
+        count = count + 1; idx = idx + 1
+        local row=Instance.new("Frame"); row.Size=UDim2.new(1,-10,0,36)
+        row.Position=UDim2.new(0,5,0,ANCHOR_LIST_Y+(idx-1)*40)
+        row.BackgroundColor3=Color3.fromRGB(35,25,15); row.BorderSizePixel=0; row.ZIndex=92; row.Parent=bSScroll
+        Instance.new("UICorner",row).CornerRadius=UDim.new(0,6)
 
-        local row = Instance.new("Frame")
-        row.Size = UDim2.new(1,-10,0,38)
-        row.Position = UDim2.new(0,5,0,5+(idx-1)*42)
-        row.BackgroundColor3 = Color3.fromRGB(35,25,15)
-        row.BorderSizePixel = 0
-        row.ZIndex = 92
-        row.Parent = bsT2Sc
-        Instance.new("UICorner",row).CornerRadius = UDim.new(0,6)
+        local dot=Instance.new("Frame"); dot.Size=UDim2.new(0,8,0,8); dot.Position=UDim2.new(0,8,0.5,-4)
+        dot.BackgroundColor3=Color3.fromRGB(255,120,30); dot.ZIndex=93; dot.Parent=row; Instance.new("UICorner",dot).CornerRadius=UDim.new(1,0)
 
-        -- Anchored indicator dot
-        local dot = Instance.new("Frame")
-        dot.Size = UDim2.new(0,8,0,8)
-        dot.Position = UDim2.new(0,8,0.5,-4)
-        dot.BackgroundColor3 = Color3.fromRGB(255,120,30)
-        dot.ZIndex = 93
-        dot.Parent = row
-        Instance.new("UICorner",dot).CornerRadius = UDim.new(1,0)
+        local nL=Instance.new("TextLabel"); nL.Size=UDim2.new(1,-105,1,0); nL.Position=UDim2.new(0,22,0,0)
+        nL.BackgroundTransparency=1; nL.Text="🔒 "..(data.name or "NPC"); nL.Font=Enum.Font.GothamBold
+        nL.TextColor3=Color3.fromRGB(255,180,80); nL.TextSize=11; nL.TextXAlignment=Enum.TextXAlignment.Left
+        nL.TextTruncate=Enum.TextTruncate.AtEnd; nL.ZIndex=93; nL.Parent=row
 
-        local nameL = Instance.new("TextLabel")
-        nameL.Size = UDim2.new(1,-110,1,0)
-        nameL.Position = UDim2.new(0,22,0,0)
-        nameL.BackgroundTransparency = 1
-        nameL.Text = "🔒 " .. (data.name or "NPC")
-        nameL.Font = Enum.Font.GothamBold
-        nameL.TextColor3 = Color3.fromRGB(255,180,80)
-        nameL.TextSize = 11
-        nameL.TextXAlignment = Enum.TextXAlignment.Left
-        nameL.TextTruncate = Enum.TextTruncate.AtEnd
-        nameL.ZIndex = 93
-        nameL.Parent = row
+        local uBtn=Instance.new("TextButton"); uBtn.Size=UDim2.new(0,78,0,24); uBtn.Position=UDim2.new(1,-84,0.5,-12)
+        uBtn.BackgroundColor3=Color3.fromRGB(40,160,80); uBtn.Text="🔓 Unanchor?"; uBtn.Font=Enum.Font.GothamBold
+        uBtn.TextColor3=Color3.new(1,1,1); uBtn.TextSize=9; uBtn.ZIndex=94; uBtn.Parent=row
+        Instance.new("UICorner",uBtn).CornerRadius=UDim.new(0,5)
 
-        local unBtn = Instance.new("TextButton")
-        unBtn.Size = UDim2.new(0,80,0,26)
-        unBtn.Position = UDim2.new(1,-86,0.5,-13)
-        unBtn.BackgroundColor3 = Color3.fromRGB(40,160,80)
-        unBtn.Text = "🔓 Unanchor?"
-        unBtn.Font = Enum.Font.GothamBold
-        unBtn.TextColor3 = Color3.new(1,1,1)
-        unBtn.TextSize = 9
-        unBtn.ZIndex = 94
-        unBtn.Parent = row
-        Instance.new("UICorner",unBtn).CornerRadius = UDim.new(0,5)
+        uBtn.MouseEnter:Connect(function() TweenService:Create(uBtn,TweenInfo.new(0.12),{BackgroundColor3=Color3.fromRGB(60,200,100)}):Play() end)
+        uBtn.MouseLeave:Connect(function() TweenService:Create(uBtn,TweenInfo.new(0.12),{BackgroundColor3=Color3.fromRGB(40,160,80)}):Play() end)
+        row.MouseEnter:Connect(function() TweenService:Create(row,TweenInfo.new(0.1),{BackgroundColor3=Color3.fromRGB(45,32,18)}):Play() end)
+        row.MouseLeave:Connect(function() TweenService:Create(row,TweenInfo.new(0.1),{BackgroundColor3=Color3.fromRGB(35,25,15)}):Play() end)
 
-        -- Hover effect
-        unBtn.MouseEnter:Connect(function()
-            TweenService:Create(unBtn,TweenInfo.new(0.12),{BackgroundColor3=Color3.fromRGB(60,200,100)}):Play()
-        end)
-        unBtn.MouseLeave:Connect(function()
-            TweenService:Create(unBtn,TweenInfo.new(0.12),{BackgroundColor3=Color3.fromRGB(40,160,80)}):Play()
-        end)
-        row.MouseEnter:Connect(function()
-            TweenService:Create(row,TweenInfo.new(0.1),{BackgroundColor3=Color3.fromRGB(45,32,18)}):Play()
-        end)
-        row.MouseLeave:Connect(function()
-            TweenService:Create(row,TweenInfo.new(0.1),{BackgroundColor3=Color3.fromRGB(35,25,15)}):Play()
-        end)
-
-        local thisKey = key
-        track(unBtn.MouseButton1Click:Connect(function()
-            unanchorNPC(thisKey)
-            -- Animate row removal
+        local thisUID = uid
+        track(uBtn.MouseButton1Click:Connect(function()
+            unanchorNPC(thisUID)
             TweenService:Create(row,TweenInfo.new(0.2),{BackgroundTransparency=1}):Play()
-            TweenService:Create(nameL,TweenInfo.new(0.2),{TextTransparency=1}):Play()
-            TweenService:Create(unBtn,TweenInfo.new(0.2),{BackgroundTransparency=1}):Play()
-            task.delay(0.25, function()
-                refreshAnchoredList()
-            end)
+            task.delay(0.25, refreshAnchoredList)
         end))
 
-        table.insert(anchoredRows, row)
+        table.insert(anchoredRowObjs, row)
     end
 
-    bsT2Sc.CanvasSize = UDim2.new(0,0,0,5+count*42)
-    bsCount.Text = "Anchored: "..count
-    bsNoNPCs.Visible = (count == 0)
+    bSCountLbl.Text = "Anchored: "..count
+    bSNoNPCs.Visible = (count == 0)
+    bSScroll.CanvasSize = UDim2.new(0,0,0, ANCHOR_LIST_Y + count * 40 + 10)
 end
 
--- Unanchor All
-track(bsUnAll.MouseButton1Click:Connect(function()
-    unanchorAllNPCs()
-    refreshAnchoredList()
-end))
+track(bSUnAllBtn.MouseButton1Click:Connect(function() unanchorAllNPCs(); refreshAnchoredList() end))
+track(bSRefrBtn.MouseButton1Click:Connect(refreshAnchoredList))
 
--- Refresh
-track(bsRefr.MouseButton1Click:Connect(refreshAnchoredList))
-
--- Auto-refresh when switching to anchored tab
-for i,tb in ipairs(bsTabBtns) do
-    track(tb.btn.MouseButton1Click:Connect(function()
-        switchBSTab(i)
-        if i == 2 then refreshAnchoredList() end
-    end))
-end
-
--- FILTER PANEL FACTORY
+-- FILTER PANEL FACTORY (with duplicate numbering)
 local function createFilterPanel(cfg)
     local p=Instance.new("Frame"); p.Name=cfg.title.."Panel"; p.Size=UDim2.new(0,400,0,450)
     p.Position=UDim2.new(0.5,-200,0.15,0); p.BackgroundColor3=Color3.fromRGB(18,18,26); p.Visible=false; p.ZIndex=80; p.Parent=cfg.parentGui
@@ -758,9 +571,9 @@ local function createFilterPanel(cfg)
     local psc=Instance.new("ScrollingFrame"); psc.Size=UDim2.new(1,-16,1,-88); psc.Position=UDim2.new(0,8,0,82); psc.BackgroundColor3=Color3.fromRGB(14,14,20); psc.BackgroundTransparency=0.3; psc.BorderSizePixel=0; psc.ScrollBarThickness=5; psc.ScrollBarImageColor3=cfg.accentColor; psc.CanvasSize=UDim2.new(0,0,0,0); psc.ElasticBehavior=Enum.ElasticBehavior.Never; psc.ZIndex=81; psc.Parent=p; Instance.new("UICorner",psc).CornerRadius=UDim.new(0,6)
     local RH=34; local RP=4; local rows={}
     local function uc() local t,s=0,0; for _,d in pairs(rows) do t=t+1; if d.enabled then s=s+1 end end; cl.Text="Selected: "..s.." / "..t end
-    local function cRow(nm,ky,ix)
+    local function cRow(dispName,ky,ix)
         local rw=Instance.new("Frame"); rw.Size=UDim2.new(1,-10,0,RH); rw.Position=UDim2.new(0,5,0,5+(ix-1)*(RH+RP)); rw.BackgroundColor3=Color3.fromRGB(28,28,40); rw.BorderSizePixel=0; rw.ZIndex=82; rw.Parent=psc; Instance.new("UICorner",rw).CornerRadius=UDim.new(0,5)
-        local nl=Instance.new("TextLabel"); nl.Size=UDim2.new(1,-80,1,0); nl.Position=UDim2.new(0,10,0,0); nl.BackgroundTransparency=1; nl.Text=nm; nl.Font=Enum.Font.Gotham; nl.TextColor3=Color3.fromRGB(220,220,240); nl.TextSize=12; nl.TextXAlignment=Enum.TextXAlignment.Left; nl.TextTruncate=Enum.TextTruncate.AtEnd; nl.ZIndex=83; nl.Parent=rw
+        local nl=Instance.new("TextLabel"); nl.Size=UDim2.new(1,-80,1,0); nl.Position=UDim2.new(0,10,0,0); nl.BackgroundTransparency=1; nl.Text=dispName; nl.Font=Enum.Font.Gotham; nl.TextColor3=Color3.fromRGB(220,220,240); nl.TextSize=12; nl.TextXAlignment=Enum.TextXAlignment.Left; nl.TextTruncate=Enum.TextTruncate.AtEnd; nl.ZIndex=83; nl.Parent=rw
         local en=true; if cfg.filterTable[ky]~=nil then en=cfg.filterTable[ky] end
         local tb2=Instance.new("TextButton"); tb2.Size=UDim2.new(0,64,0,24); tb2.Position=UDim2.new(1,-70,0.5,-12); tb2.BackgroundColor3=en and Color3.fromRGB(40,140,80) or Color3.fromRGB(100,35,35); tb2.Text=en and ("✓ "..cfg.onLabel) or ("✗ "..cfg.offLabel); tb2.Font=Enum.Font.GothamBold; tb2.TextColor3=Color3.new(1,1,1); tb2.TextSize=10; tb2.ZIndex=84; tb2.Parent=rw; Instance.new("UICorner",tb2).CornerRadius=UDim.new(0,5)
         local data={row=rw,toggleBtn=tb2,enabled=en,key=ky}; rows[ky]=data; cfg.filterTable[ky]=en
@@ -772,10 +585,16 @@ local function createFilterPanel(cfg)
     end
     local function refresh()
         for _,d in pairs(rows) do if d.row and d.row.Parent then d.row:Destroy() end end; rows={}
-        local npcs=allNPCRoots(); local seen,uniq={},{}
-        for _,e in ipairs(npcs) do local k=getNPCKey(e.model); if not seen[k] then seen[k]=true; table.insert(uniq,{name=e.model.Name,key=k}) end end
-        table.sort(uniq,function(a,b) return a.name:lower()<b.name:lower() end)
-        for i,n in ipairs(uniq) do cRow(n.name,n.key,i) end; psc.CanvasSize=UDim2.new(0,0,0,5+#uniq*(RH+RP)); uc()
+        local npcs=allNPCRoots()
+        local named = buildDisplayNames(npcs)
+        -- Deduplicate by key
+        local seen={}; local uniq={}
+        for _,item in ipairs(named) do
+            local k=getNPCKey(item.e.model)
+            if not seen[k] then seen[k]=true; table.insert(uniq,{display=item.display, key=k}) end
+        end
+        table.sort(uniq,function(a,b) return a.display:lower()<b.display:lower() end)
+        for i,n in ipairs(uniq) do cRow(n.display,n.key,i) end; psc.CanvasSize=UDim2.new(0,0,0,5+#uniq*(RH+RP)); uc()
     end
     track(sa.MouseButton1Click:Connect(function() for k,d in pairs(rows) do d.enabled=true; cfg.filterTable[k]=true; d.toggleBtn.Text="✓ "..cfg.onLabel; d.toggleBtn.BackgroundColor3=Color3.fromRGB(40,140,80); d.row.BackgroundColor3=Color3.fromRGB(28,28,40) end; uc() end))
     track(da.MouseButton1Click:Connect(function() for k,d in pairs(rows) do d.enabled=false; cfg.filterTable[k]=false; d.toggleBtn.Text="✗ "..cfg.offLabel; d.toggleBtn.BackgroundColor3=Color3.fromRGB(100,35,35); d.row.BackgroundColor3=Color3.fromRGB(35,20,20) end; uc() end))
@@ -783,7 +602,7 @@ local function createFilterPanel(cfg)
     return p, refresh
 end
 
-local bringPanel,refreshBringList=createFilterPanel({title="Bring NPC Filter",accentColor=Color3.fromRGB(0,100,100),filterTable=bringFilter,parentGui=gui,onLabel="Bring",offLabel="Skip",extraBtn=function() bSP.Visible=not bSP.Visible; if bSP.Visible and bsCurrentTab==2 then refreshAnchoredList() end end})
+local bringPanel,refreshBringList=createFilterPanel({title="Bring NPC Filter",accentColor=Color3.fromRGB(0,100,100),filterTable=bringFilter,parentGui=gui,onLabel="Bring",offLabel="Skip",extraBtn=function() bSP.Visible=not bSP.Visible; if bSP.Visible then refreshAnchoredList() end end})
 local deletePanel,refreshDeleteList=createFilterPanel({title="Delete NPC Filter",accentColor=Color3.fromRGB(140,90,10),filterTable=deleteFilter,parentGui=gui,onLabel="Del",offLabel="Keep"})
 
 track(bG.MouseButton1Click:Connect(function() refreshBringList(); bringPanel.Visible=not bringPanel.Visible end))
@@ -793,8 +612,7 @@ track(dG.MouseButton1Click:Connect(function() refreshDeleteList(); deletePanel.V
 local gV=true
 local function setVis(v) gV=v; for i,tf in ipairs(tabFrames) do tf.Visible=v and (i==currentTab) end
     tabBar.Visible=v; stB.Visible=v; anB.Visible=v
-    if v then mainFrame.Size=UDim2.new(0,430,0,460); togB.Text="HIDE" else mainFrame.Size=UDim2.new(0,430,0,38); togB.Text="SHOW" end
-end
+    if v then mainFrame.Size=UDim2.new(0,430,0,460); togB.Text="HIDE" else mainFrame.Size=UDim2.new(0,430,0,38); togB.Text="SHOW" end end
 track(togB.MouseButton1Click:Connect(function() setVis(not gV) end))
 
 -- CLICK MODES
@@ -812,69 +630,70 @@ track(btns["Push NPCs (Loop)"].MouseButton1Click:Connect(function() states.pushN
 
 track(btns["Fling All NPCs"].MouseButton1Click:Connect(function() for _,e in ipairs(allNPCRoots()) do e.hrp.Velocity=Vector3.new(math.random()*2-1,0.5,math.random()*2-1).Unit*flingStrength end end))
 
+-- BRING ALL with numbered names
 track(btns["Bring All NPCs"].MouseButton1Click:Connect(function()
     local mH=player.Character and player.Character:FindFirstChild("HumanoidRootPart"); if not mH then return end
     local bn=btns["Bring All NPCs"]; bn.BackgroundColor3=Color3.fromRGB(80,80,80)
     task.spawn(function()
+        local npcs=allNPCRoots()
         local filtered={}
-        for _,e in ipairs(allNPCRoots()) do local k=getNPCKey(e.model); if next(bringFilter)==nil or bringFilter[k]~=false then table.insert(filtered,e) end end
+        local named=buildDisplayNames(npcs)
+        for _,item in ipairs(named) do
+            local k=getNPCKey(item.e.model)
+            if next(bringFilter)==nil or bringFilter[k]~=false then table.insert(filtered,{e=item.e,display=item.display}) end
+        end
         local targets={}
-        for i,e in ipairs(filtered) do local a=(i/math.max(1,#filtered))*math.pi*2; targets[i]=mH.CFrame*CFrame.new(math.cos(a)*4,0,math.sin(a)*4) end
+        for i,f in ipairs(filtered) do local a=(i/math.max(1,#filtered))*math.pi*2; targets[i]=mH.CFrame*CFrame.new(math.cos(a)*4,0,math.sin(a)*4) end
         for att=1,bringAttempts do bn.Text="Locking... ("..att.."/"..bringAttempts..")"
             local allL=true
-            for i,e in ipairs(filtered) do local ex=pcall(function() local _=e.hrp.Position end)
-                if ex and targets[i] then if not isNPCAtPos(e.hrp,targets[i],2) then allL=false; bringNPCToPos(e,targets[i]) end end end
+            for i,f in ipairs(filtered) do local ex=pcall(function() local _=f.e.hrp.Position end)
+                if ex and targets[i] then if not isNPCAtPos(f.e.hrp,targets[i],2) then allL=false; bringNPCToPos(f.e,targets[i],f.display) end end end
             if allL then break end; if att<bringAttempts then task.wait(0.05) end
         end
-        for i,e in ipairs(filtered) do local ex=pcall(function() local _=e.hrp.Position end); if ex and targets[i] then bringNPCToPos(e,targets[i]) end end
+        for i,f in ipairs(filtered) do local ex=pcall(function() local _=f.e.hrp.Position end); if ex and targets[i] then bringNPCToPos(f.e,targets[i],f.display) end end
         bn.Text="Bring All NPCs"; bn.BackgroundColor3=Color3.fromRGB(0,139,139)
     end)
 end))
 
 track(btns["Delete All NPCs"].MouseButton1Click:Connect(function()
-    for _,e in ipairs(allNPCRoots()) do local k=getNPCKey(e.model); if next(deleteFilter)==nil or deleteFilter[k]~=false then pcall(function() e.model:Destroy() end) end end
-end))
+    for _,e in ipairs(allNPCRoots()) do local k=getNPCKey(e.model); if next(deleteFilter)==nil or deleteFilter[k]~=false then pcall(function() e.model:Destroy() end) end end end))
 
 for _,m in ipairs({{label="View NPC (Click)",key="viewNPC"},{label="Kill NPC (Click)",key="killClick"},{label="Fling NPC (Click)",key="fling"}}) do
     track(btns[m.label].MouseButton1Click:Connect(function() dACM(m.key); states[m.key]=not states[m.key]
         btns[m.label].Text=states[m.key] and ("⏹ "..m.label..": ON") or m.label
-        if m.key=="viewNPC" and not states.viewNPC and viewingNPC then doUnview() end end))
-end
+        if m.key=="viewNPC" and not states.viewNPC and viewingNPC then doUnview() end end)) end
 
 -- TAB 2
 for _,m in ipairs({{label="Delete NPC (Click)",key="deleteClick"},{label="Bring NPC (Click)",key="bringClick"},{label="Ragdoll NPC (Click)",key="ragdollClick"}}) do
     track(btns2[m.label].MouseButton1Click:Connect(function() dACM(m.key); states[m.key]=not states[m.key]
-        btns2[m.label].Text=states[m.key] and ("⏹ "..m.label..": ON") or m.label end))
-end
+        btns2[m.label].Text=states[m.key] and ("⏹ "..m.label..": ON") or m.label end)) end
 
--- TAB 3 AUTOS
+-- TAB 3
 local function setAS(l,k,a) states[k]=a; local b=btns3[l]; if b then b.btn.Text=a and "⏹ ON" or "OFF"
     b.dot.BackgroundColor3=a and Color3.fromRGB(0,255,80) or Color3.fromRGB(80,80,80)
     if a then task.spawn(function() while states[k] do TweenService:Create(b.dot,TweenInfo.new(0.4),{BackgroundColor3=Color3.fromRGB(0,255,80)}):Play(); task.wait(0.4)
         if not states[k] then break end; TweenService:Create(b.dot,TweenInfo.new(0.4),{BackgroundColor3=Color3.fromRGB(0,150,40)}):Play(); task.wait(0.4) end
-        b.dot.BackgroundColor3=Color3.fromRGB(80,80,80) end) end end
-end
+        b.dot.BackgroundColor3=Color3.fromRGB(80,80,80) end) end end end
 
 track(btns3["Auto Fling NPCs"].btn.MouseButton1Click:Connect(function()
     local ns=not states.autoFling; setAS("Auto Fling NPCs","autoFling",ns)
     if ns then task.spawn(function() local ep=loopEpoch; while states.autoFling and ep==loopEpoch do
-        for _,e in ipairs(allNPCRoots()) do pcall(function() e.hrp.Velocity=Vector3.new(math.random()*2-1,0.5,math.random()*2-1).Unit*flingStrength end) end; task.wait(0.5) end end) end
-end))
+        for _,e in ipairs(allNPCRoots()) do pcall(function() e.hrp.Velocity=Vector3.new(math.random()*2-1,0.5,math.random()*2-1).Unit*flingStrength end) end; task.wait(0.5) end end) end end))
 
 track(btns3["Bring All NPCs (Loop)"].btn.MouseButton1Click:Connect(function()
     local ns=not states.bringLoop; setAS("Bring All NPCs (Loop)","bringLoop",ns)
     if ns then task.spawn(function() local ep=loopEpoch; while states.bringLoop and ep==loopEpoch do
         local mH=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-        if mH then local fl={}; for _,e in ipairs(allNPCRoots()) do local k=getNPCKey(e.model); if next(bringFilter)==nil or bringFilter[k]~=false then table.insert(fl,e) end end
-            for i,e in ipairs(fl) do local a=(i/math.max(1,#fl))*math.pi*2; bringNPCToPos(e,mH.CFrame*CFrame.new(math.cos(a)*4,0,math.sin(a)*4)) end
-        end; task.wait(0.01) end end) end
-end))
+        if mH then
+            local npcs=allNPCRoots(); local named=buildDisplayNames(npcs); local fl={}
+            for _,item in ipairs(named) do local k=getNPCKey(item.e.model); if next(bringFilter)==nil or bringFilter[k]~=false then table.insert(fl,item) end end
+            for i,item in ipairs(fl) do local a=(i/math.max(1,#fl))*math.pi*2; bringNPCToPos(item.e,mH.CFrame*CFrame.new(math.cos(a)*4,0,math.sin(a)*4),item.display) end
+        end; task.wait(0.01) end end) end end))
 
 track(btns3["Ragdoll All NPCs (Loop)"].btn.MouseButton1Click:Connect(function()
     local ns=not states.ragdollLoop; setAS("Ragdoll All NPCs (Loop)","ragdollLoop",ns)
     if ns then task.spawn(function() local ep=loopEpoch; while states.ragdollLoop and ep==loopEpoch do
-        for _,e in ipairs(allNPCRoots()) do pcall(function() ragdollNPC(e.model) end) end; task.wait(1) end end) end
-end))
+        for _,e in ipairs(allNPCRoots()) do pcall(function() ragdollNPC(e.model) end) end; task.wait(1) end end) end end))
 
 -- STOP ALL
 local function rAU() local ab=gAB(); for _,m in ipairs(allCM) do if ab[m.label] then ab[m.label].Text=m.label end end
@@ -882,8 +701,7 @@ local function rAU() local ab=gAB(); for _,m in ipairs(allCM) do if ab[m.label] 
     for _,b in pairs(btns3) do b.btn.Text="OFF"; b.dot.BackgroundColor3=Color3.fromRGB(80,80,80) end end
 
 track(stB.MouseButton1Click:Connect(function() resetStates(); hideUV(); rAU() end))
-track(anB.MouseButton1Click:Connect(function() anchorActive=not anchorActive
-    anB.Text="Anchor Toggle: "..(anchorActive and "ON" or "OFF")
+track(anB.MouseButton1Click:Connect(function() anchorActive=not anchorActive; anB.Text="Anchor Toggle: "..(anchorActive and "ON" or "OFF")
     anB.BackgroundColor3=anchorActive and Color3.fromRGB(0,120,60) or Color3.fromRGB(80,40,40) end))
 track(setB.MouseButton1Click:Connect(function() sP.Visible=not sP.Visible end))
 track(sPCB.MouseButton1Click:Connect(function() sP.Visible=false end))
@@ -900,7 +718,7 @@ track(mouse.Button1Down:Connect(function()
     elseif states.fling and hr then hr.Velocity=Vector3.new(math.random()*2-1,0.5,math.random()*2-1).Unit*flingStrength
     elseif states.deleteClick then pcall(function() md:Destroy() end)
     elseif states.bringClick then local mH=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-        if mH and hr then bringNPCToPos({hum=hm,hrp=hr,model=md},mH.CFrame*CFrame.new(0,0,-5)) end
+        if mH and hr then bringNPCToPos({hum=hm,hrp=hr,model=md},mH.CFrame*CFrame.new(0,0,-5),md.Name) end
     elseif states.ragdollClick then ragdollNPC(md) end
 end))
 
@@ -916,4 +734,4 @@ track(UserInputService.InputBegan:Connect(function(inp,gp)
     if inp.KeyCode==Enum.KeyCode.V and viewingNPC then doUnview() end
 end))
 
-print("[NPC Control Panel v8e] Anchored NPCs tab added — unanchor NPCs after bringing | C/Insert = toggle | X = stop | V = unview")
+print("[NPC Control Panel v8f] Anchored NPCs inside settings + duplicate numbering | C/Insert = toggle | X = stop | V = unview")
